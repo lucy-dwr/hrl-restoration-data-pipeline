@@ -1,2 +1,87 @@
 # hrl-restoration-data-pipeline
-Python pipeline for ingesting, validating, standardizing, and publishing HRL restoration project data for Azure-hosted public applications
+
+Local, deterministic ingestion, validation, candidate generation, and publication simulation for HRL restoration projects. It has no Azure orchestration or production database access.
+
+```bash
+python -m pip install -e '.[test]'
+hrl-pipeline <submission-directory> --registry tests/fixtures/registry.json \
+  --registry-manifest tests/fixtures/registry-manifest.json --output /tmp/hrl-report
+pytest
+```
+
+Validation writes authoritative `validation-report.json` plus prominent HTML and PDF companion reports. A successful validation creates schema-validated `canonical-candidate.geojson` and privacy-filtered `public-candidate.geojson`; it is still `AWAITING_APPROVAL`. Local publication is available through `publication.publish_local` and creates immutable directories plus `current.json`.
+
+## Updating the schema snapshot
+
+The configured schema is `hrl-restoration-schema` **v1.2.0**, pinned to its immutable commit and checksum in `schema-snapshots/`. Never edit an existing snapshot or follow the upstream default branch at runtime.
+
+After an approved schema release, use a review branch and run:
+
+```bash
+python scripts/import_schema_snapshot.py vX.Y.Z
+```
+
+The importer resolves the release tag to its annotated commit, downloads the released LinkML source, calculates its SHA-256 checksum, and refuses to overwrite an existing snapshot. Then update the configured `SCHEMA_PATH` in `src/hrl_restoration_pipeline/validation.py`, add/adjust contract fixtures, run `pytest`, and submit the snapshot, manifest, code, and tests together for review. Schema import is an explicit release change; it must not occur automatically in production.
+
+## Local Phase 2 release checklist
+
+1. Select and record an immutable, checksummed project-registry export snapshot.
+2. Import an approved schema release with `python scripts/import_schema_snapshot.py vX.Y.Z`.
+3. Change the configured schema version only in a reviewed change with its snapshot and contract tests.
+4. Run the full suite: `pytest`.
+5. Run `hrl-pipeline` locally on the submission with the selected registry snapshot.
+6. Review all warnings plus the canonical and public candidate GeoJSON files. A successful validation is `AWAITING_APPROVAL`; it is not publication.
+7. Simulate approved promotion locally with `hrl-pipeline promote` after human approval.
+8. Verify `current.json` references the new immutable snapshot and that its GeoJSON, GeoPackage, CSV, and metadata artifacts (including checksums) are present.
+
+## Local approval and promotion
+
+Validation never publishes data. An authorized reviewer must place a reviewed `_APPROVE` JSON marker in the candidate directory before local promotion:
+
+```json
+{
+  "submission_id":"example-001",
+  "approved_by":"local-reviewer",
+  "approved_at":"2026-08-24T20:00:00Z",
+  "candidate_manifest_sha256":"<SHA-256 of candidate-manifest.json>"
+}
+```
+
+The marker must match the candidate's `status.json` and the checksum of its generated `candidate-manifest.json`; that status must be `AWAITING_APPROVAL`. Then run:
+
+```bash
+hrl-pipeline promote /path/to/candidate \
+  --master /path/to/standardized/canonical-master.geojson \
+  --public-root /path/to/public-exports/restoration-projects \
+  --version 2026-08-24T200000Z
+```
+
+Promotion rechecks every candidate artifact checksum and its schema/registry provenance, validates the candidate and any existing local master against the pinned canonical LinkML profile, upserts only submitted IDs, writes a new immutable public snapshot, updates the local canonical master, and records a private immutable promotion audit. It never allocates, alters, retires, or infers project IDs or record lifecycle from an absent record.
+
+## Container image
+
+The Docker image contains the pinned Python dependencies and the GDAL, GEOS,
+and PROJ runtime libraries needed for local spatial processing. It contains no
+Azure credentials, SDK configuration, or production database access.
+
+Build and run the full suite in the test target:
+
+```bash
+docker build --target test --tag hrl-restoration-data-pipeline:test .
+```
+
+Build the runtime image:
+
+```bash
+docker build --target runtime --tag hrl-restoration-data-pipeline:local .
+```
+
+The runtime entry point is `hrl-pipeline`; a future Container Apps validation
+job passes the normal validation arguments, while a promotion job starts with
+the `promote` subcommand. For example, with suitable local paths mounted:
+
+```bash
+docker run --rm hrl-restoration-data-pipeline:local \
+  /data/submission --registry /data/registry.json \
+  --registry-manifest /data/registry-manifest.json --output /data/output
+```

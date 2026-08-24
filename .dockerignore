@@ -1,0 +1,16 @@
+.git
+.pytest_cache
+__pycache__
+*.py[cod]
+*.egg-info
+.DS_Store
+coverage.xml
+htmlcov
+data
+outputs
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.zip
