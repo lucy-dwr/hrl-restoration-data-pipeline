@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hrl-restoration-data-pipeline"
+version = "0.2.0"
+description = "Deterministic local HRL restoration submission pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "geopandas==1.0.1",
+  "pyogrio==0.10.0",
+  "shapely==2.0.6",
+  "pyproj==3.7.0",
+  "linkml==1.11.1",
+  "linkml-runtime==1.11.1",
+  "jinja2==3.1.4",
+  "reportlab==4.2.5",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.3.4", "pytest-cov==6.0.0"]
+
+[project.scripts]
+hrl-pipeline = "hrl_restoration_pipeline.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hrl_restoration_pipeline"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

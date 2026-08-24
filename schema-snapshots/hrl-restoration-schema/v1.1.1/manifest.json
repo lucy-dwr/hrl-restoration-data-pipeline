@@ -1,0 +1,9 @@
+{
+  "upstream_repository": "https://github.com/lucy-dwr/hrl-restoration-schema",
+  "tag": "v1.1.1",
+  "commit_sha": "dd31a59946c97ec67dc6c57f7ce4213a6a812b53",
+  "retrieved_at": "2026-08-24T00:00:00Z",
+  "artifacts": {
+    "hrl_restoration_project.yaml": "281ad75b2aad7f57220a054927df0f840c49e13de65600f315294e8d2c5327cb"
+  }
+}
