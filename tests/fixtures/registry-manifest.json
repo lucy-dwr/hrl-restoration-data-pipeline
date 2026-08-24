@@ -1,0 +1,5 @@
+{
+  "source_registry": "test-read-only-registry",
+  "export_version": "2026-08-24-test",
+  "checksums": {"registry.json": "9f146e46d71b900795c85997431a60c187fb7b16a3977e396b9d9a07a4368ee9"}
+}
