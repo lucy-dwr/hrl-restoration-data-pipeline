@@ -7,16 +7,16 @@ identity permissions.
 
 ## Release boundary
 
-The publisher is a dedicated Microsoft Entra workload identity used only by
+The publisher is a dedicated Microsoft Entra service principal used only by
 GitHub Actions. It is not the validation worker managed identity. The platform
 team must configure it before the release workflow is usable:
 
 | Configuration | Required value |
 | --- | --- |
-| Federated credential | GitHub Actions OIDC issuer and audience, restricted to this repository's protected `production-image-release` environment or a protected `v*` release-tag subject. |
+| Client secret | A secret with a recorded expiry and rotation owner, stored only as `AZURE_CREDENTIALS` in the protected `production-image-release` GitHub Environment. |
 | Azure role | `AcrPush` at the specific ACR resource scope only. |
 | GitHub environment | `production-image-release`, with required reviewers and release tag protection. |
-| GitHub variables | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `ACR_NAME`, and `ACR_LOGIN_SERVER`. |
+| GitHub configuration | `AZURE_CREDENTIALS` Environment secret plus non-secret `ACR_NAME` and `ACR_LOGIN_SERVER` Environment variables. |
 
 The existing runtime validation identity remains `AcrPull` only. The publisher
 must receive no Terraform, Container Apps Job, storage, queue, or
@@ -27,8 +27,8 @@ subscription-level Contributor permission.
 `.github/workflows/release-image.yml` runs only for a `v*` tag or a manually
 selected `v*` tag. It verifies that the checked-out commit is exactly that
 annotated tag, runs the Python suite and Docker `test` target, exchanges the
-GitHub OIDC token for the publisher identity, pushes the image, and records
-the digest returned by the registry.
+service-principal client secret for the publisher identity, pushes the image,
+and records the digest returned by the registry.
 
 The workflow uploads `image-release.json` as a GitHub Actions artifact. Its
 contract is `hrl.image-release/v1` and includes the full digest-pinned
@@ -56,10 +56,10 @@ An operator opens a reviewable change in `hrl-azure-infrastructure` that:
 2. updates only the relevant job's digest-pinned image reference; and
 3. applies through that repository's normal reviewed deployment process.
 
-The workflow has read-only repository permission plus `id-token: write`. It
-cannot write repository contents, open or merge pull requests, run Terraform,
-or update a Container Apps Job. A successful image push therefore never
-silently changes the running workload.
+The workflow has read-only repository permission. It cannot write repository
+contents, open or merge pull requests, run Terraform, or update a Container
+Apps Job. A successful image push therefore never silently changes the running
+workload.
 
 ## Local contract check
 
