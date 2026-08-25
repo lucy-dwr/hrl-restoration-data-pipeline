@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from hrl_restoration_pipeline.ingestion import load_submission
-from hrl_restoration_pipeline.publication import merge, publish_local
+from hrl_restoration_pipeline.publication import activate_local_snapshot, merge, publish_local
 from hrl_restoration_pipeline.registry import SnapshotRegistry
 from hrl_restoration_pipeline.reporting import write_reports
 from hrl_restoration_pipeline.transformation import as_feature_collection, canonicalize, publicize
@@ -144,13 +144,13 @@ def _cli_record(project_id: str = "HRL-001", **updates):
     return value
 
 
-def _write_cli_submission(directory: Path, suffix: str, values: dict | None = None, crs: str | None = "EPSG:4326") -> Path:
+def _write_cli_submission(directory: Path, suffix: str, values: dict | None = None, crs: str | None = "EPSG:4326", submission_id: str = "cli-test") -> Path:
     import geopandas as gpd
     from shapely.geometry import Point
 
     values = values or _cli_record()
     primary = f"projects{suffix}"
-    (directory / "submission.json").write_text(json.dumps(_cli_manifest(primary)))
+    (directory / "submission.json").write_text(json.dumps(_cli_manifest(primary, submission_id)))
     frame = gpd.GeoDataFrame([values], geometry=[Point(-121, 38)], crs=crs)
     if suffix == ".geojson":
         frame.to_file(directory / primary, driver="GeoJSON")
@@ -286,6 +286,20 @@ def test_publication_writes_validated_artifacts_and_preserves_pointer_on_failure
     assert not (root / "v2").exists()
 
 
+def test_publication_conditional_pointer_preserves_competing_current_version(tmp_path):
+    normalized = {"project_stage": ["design"], "lead_entity": ["dwr"], "project_type": ["tidal habitat"], "target_species": ["Chinook salmon"]}
+    public = publicize(canonicalize([_cli_record("HRL-001", geometry={"type": "Point", "coordinates": [100, 200]}, **normalized)], manifest()))
+    root = tmp_path / "exports"
+    publish_local(public, root, "v1")
+    v1_checksum = hashlib.sha256((root / "current.json").read_bytes()).hexdigest()
+    publish_local(public, root, "v2", update_pointer=False)
+    publish_local(public, root, "v3")
+    before = (root / "current.json").read_text()
+    with pytest.raises(ValueError, match="changed during promotion"):
+        activate_local_snapshot(root, "v2", v1_checksum)
+    assert (root / "current.json").read_text() == before
+
+
 def test_cli_promotion_requires_explicit_matching_approval_and_upserts_local_master(tmp_path):
     submission = tmp_path / "submission"; submission.mkdir()
     _write_cli_submission(submission, ".geojson", _cli_record("HRL-001"))
@@ -314,6 +328,62 @@ def test_cli_promotion_requires_explicit_matching_approval_and_upserts_local_mas
     assert after == before
     (candidate / "public-candidate.geojson").write_text("tampered")
     assert _run_promote(candidate, master, public_root, "v2").returncode == 2
+    assert not (public_root / "v2").exists()
+
+
+def test_cli_promotion_rejects_repeated_candidate_and_preserves_current_pointer(tmp_path):
+    submission = tmp_path / "submission"; submission.mkdir()
+    _write_cli_submission(submission, ".geojson")
+    candidate = tmp_path / "candidate"
+    assert _run_cli(submission, candidate).returncode == 0
+    approval = {"submission_id": "cli-test", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
+    (candidate / "_APPROVE").write_text(json.dumps(approval))
+    master = tmp_path / "standardized" / "canonical-master.geojson"; public_root = tmp_path / "public"
+    assert _run_promote(candidate, master, public_root, "v1").returncode == 0
+    pointer_before = (public_root / "current.json").read_text()
+    master_before = master.read_text()
+    repeated = _run_promote(candidate, master, public_root, "v2")
+    assert repeated.returncode == 2
+    assert "already been promoted" in repeated.stderr
+    assert (public_root / "current.json").read_text() == pointer_before
+    assert master.read_text() == master_before
+    assert not (public_root / "v2").exists()
+
+
+def test_cli_promotion_requires_complete_checksum_manifest(tmp_path):
+    submission = tmp_path / "submission"; submission.mkdir()
+    _write_cli_submission(submission, ".geojson")
+    candidate = tmp_path / "candidate"
+    assert _run_cli(submission, candidate).returncode == 0
+    candidate_manifest = json.loads((candidate / "candidate-manifest.json").read_text())
+    del candidate_manifest["artifacts"]["public-candidate.geojson"]
+    (candidate / "candidate-manifest.json").write_text(json.dumps(candidate_manifest, sort_keys=True))
+    approval = {"submission_id": "cli-test", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
+    (candidate / "_APPROVE").write_text(json.dumps(approval))
+    completed = _run_promote(candidate, tmp_path / "master.geojson", tmp_path / "public", "v1")
+    assert completed.returncode == 2
+    assert "candidate-manifest.json is incomplete" in completed.stderr
+    assert not (tmp_path / "public" / "current.json").exists()
+
+
+@pytest.mark.parametrize("change", [
+    lambda approval: {**approval, "candidate_manifest_sha256": "0" * 64},
+    lambda approval: {**approval, "submission_id": "another-submission"},
+])
+def test_cli_promotion_rejects_mismatched_approval_without_changing_current_pointer(tmp_path, change):
+    submission = tmp_path / "submission"; submission.mkdir()
+    _write_cli_submission(submission, ".geojson")
+    candidate = tmp_path / "candidate"
+    assert _run_cli(submission, candidate).returncode == 0
+    master = tmp_path / "standardized" / "canonical-master.geojson"; public_root = tmp_path / "public"
+    approval = {"submission_id": "cli-test", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
+    (candidate / "_APPROVE").write_text(json.dumps(approval))
+    assert _run_promote(candidate, master, public_root, "v1").returncode == 0
+    pointer_before = (public_root / "current.json").read_text()
+    (candidate / "_APPROVE").write_text(json.dumps(change(approval)))
+    failed = _run_promote(candidate, master, public_root, "v2")
+    assert failed.returncode == 2
+    assert (public_root / "current.json").read_text() == pointer_before
     assert not (public_root / "v2").exists()
 
 

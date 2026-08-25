@@ -12,6 +12,9 @@ from .transformation import as_feature_collection
 from .validation import candidate_profile_errors, schema_provenance
 
 
+_UNSET = object()
+
+
 def merge(existing: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Upsert submitted records without treating an omitted record as deleted."""
     merged = {x["project_id"]: x for x in existing}
@@ -75,8 +78,50 @@ def _validate_snapshot(records: list[dict[str, Any]], directory: Path) -> None:
         raise ValueError("projects.csv project ordering differs from the snapshot")
 
 
-def publish_local(public_records: list[dict[str, Any]], root: Path, version: str, metadata: dict[str, Any] | None = None) -> Path:
-    """Create a validated immutable public snapshot, then replace ``current.json``."""
+def _pointer_checksum(root: Path) -> str | None:
+    pointer = root / "current.json"
+    return _sha256(pointer) if pointer.is_file() else None
+
+
+def activate_local_snapshot(root: Path, version: str, expected_pointer_checksum: str | None | object = _UNSET) -> None:
+    """Make an existing immutable snapshot current, optionally conditionally.
+
+    ``expected_pointer_checksum`` is captured before promotion starts.  It
+    prevents a second local promotion from silently replacing a pointer that
+    changed while the first promotion was preparing its snapshot.
+    """
+    target = root / version
+    metadata_path = target / "metadata.json"
+    if not target.is_dir() or not metadata_path.is_file():
+        raise ValueError("immutable snapshot is incomplete")
+    if expected_pointer_checksum is not _UNSET and _pointer_checksum(root) != expected_pointer_checksum:
+        raise ValueError("current.json changed during promotion")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    checksums = metadata.get("output_checksums")
+    if not isinstance(checksums, dict) or any(
+        not isinstance(name, str) or not isinstance(checksum, str) or not (target / name).is_file()
+        or _sha256(target / name) != checksum
+        for name, checksum in checksums.items()
+    ):
+        raise ValueError("immutable snapshot checksums do not match")
+    pointer = {
+        "snapshot_version": version,
+        "schema_version": metadata["schema_version"],
+        "pipeline_version": metadata["pipeline_version"],
+        "artifacts": {name: f"{version}/{name}" for name in ("projects.geojson", "projects.gpkg", "projects.csv", "metadata.json")},
+        "output_checksums": checksums,
+    }
+    pointer_tmp = root / ".current.json.tmp"
+    pointer_tmp.write_text(json.dumps(pointer, indent=2, sort_keys=True), encoding="utf-8")
+    pointer_tmp.replace(root / "current.json")
+
+
+def publish_local(
+    public_records: list[dict[str, Any]], root: Path, version: str,
+    metadata: dict[str, Any] | None = None, *, update_pointer: bool = True,
+    expected_pointer_checksum: str | None | object = _UNSET,
+) -> Path:
+    """Create a validated immutable public snapshot and, by default, make it current."""
     root.mkdir(parents=True, exist_ok=True)
     target = root / version
     if target.exists():
@@ -96,10 +141,8 @@ def publish_local(public_records: list[dict[str, Any]], root: Path, version: str
         snapshot_metadata = {**extra, "snapshot_version": version, "schema_version": extra.get("schema_version", schema_provenance()["version"]), "pipeline_version": __version__, "output_checksums": checksums}
         (staging / "metadata.json").write_text(json.dumps(snapshot_metadata, indent=2, sort_keys=True), encoding="utf-8")
         staging.replace(target)
-        pointer = {"snapshot_version": version, "schema_version": snapshot_metadata["schema_version"], "pipeline_version": __version__, "artifacts": {name: f"{version}/{name}" for name in ("projects.geojson", "projects.gpkg", "projects.csv", "metadata.json")}, "output_checksums": checksums}
-        pointer_tmp = root / ".current.json.tmp"
-        pointer_tmp.write_text(json.dumps(pointer, indent=2, sort_keys=True), encoding="utf-8")
-        pointer_tmp.replace(root / "current.json")
+        if update_pointer:
+            activate_local_snapshot(root, version, expected_pointer_checksum)
         return target
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)

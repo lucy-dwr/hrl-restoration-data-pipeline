@@ -9,11 +9,19 @@ from typing import Any
 
 from shapely.geometry import shape
 
-from .publication import merge, publish_local
+from .publication import _pointer_checksum, activate_local_snapshot, merge, publish_local
 from .transformation import as_feature_collection, publicize
 from .validation import candidate_profile_errors, schema_provenance
 
 APPROVAL_MARKER = "_APPROVE"
+CANDIDATE_ARTIFACTS = {
+    "canonical-candidate.geojson",
+    "public-candidate.geojson",
+    "status.json",
+    "validation-report.json",
+    "validation-report.html",
+    "validation-report.pdf",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -27,11 +35,15 @@ def _candidate_manifest(candidate_directory: Path) -> tuple[dict[str, Any], str]
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("candidate-manifest.json is required and must contain JSON") from exc
     required = {"submission_id", "status", "pipeline_version", "schema", "registry", "artifacts"}
-    if not isinstance(manifest, dict) or not required <= set(manifest) or not isinstance(manifest["artifacts"], dict):
+    if (not isinstance(manifest, dict) or not required <= set(manifest)
+            or not isinstance(manifest["artifacts"], dict)
+            or set(manifest["artifacts"]) != CANDIDATE_ARTIFACTS):
         raise ValueError("candidate-manifest.json is incomplete")
     for name, expected in manifest["artifacts"].items():
         artifact = candidate_directory / name
-        if not isinstance(name, str) or not isinstance(expected, str) or not artifact.is_file() or _sha256(artifact) != expected:
+        if (not isinstance(name, str) or Path(name).name != name
+                or not isinstance(expected, str) or not artifact.is_file()
+                or _sha256(artifact) != expected):
             raise ValueError(f"candidate artifact checksum does not match: {name}")
     return manifest, _sha256(path)
 
@@ -79,6 +91,19 @@ def _approval(candidate_directory: Path) -> dict[str, str]:
     return {key: approval[key] for key in required}
 
 
+def _already_promoted(audit_directory: Path, manifest_checksum: str) -> bool:
+    if not audit_directory.is_dir():
+        return False
+    for audit_path in audit_directory.glob("*.json"):
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if audit.get("candidate_manifest_sha256") == manifest_checksum:
+            return True
+    return False
+
+
 def promote_local(candidate_directory: Path, master_path: Path, public_root: Path, version: str) -> Path:
     """Merge an explicitly approved candidate and create a public snapshot.
 
@@ -90,6 +115,11 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
     manifest, manifest_checksum = _candidate_manifest(candidate_directory)
     if approval["candidate_manifest_sha256"] != manifest_checksum:
         raise ValueError("approval marker does not match the current candidate manifest")
+    audit_path = master_path.parent / "promotion-audits" / f"{version}.json"
+    if audit_path.exists():
+        raise FileExistsError("immutable promotion audit already exists")
+    if _already_promoted(audit_path.parent, manifest_checksum):
+        raise ValueError("candidate has already been promoted")
     try:
         status = json.loads((candidate_directory / "status.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -104,16 +134,14 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
     errors = candidate_profile_errors(merged, "RestorationProjectCanonicalRecord")
     if errors:
         raise ValueError(f"merged master violates RestorationProjectCanonicalRecord: {errors[0][1]}")
-    audit_path = master_path.parent / "promotion-audits" / f"{version}.json"
-    if audit_path.exists():
-        raise FileExistsError("immutable promotion audit already exists")
+    expected_pointer_checksum = _pointer_checksum(public_root)
     snapshot = publish_local(publicize(merged), public_root, version, {
         "schema_version": schema_provenance()["version"],
         "source_submission_id": approval["submission_id"],
         "approved_at": approval["approved_at"],
         "candidate_manifest_sha256": manifest_checksum,
         "registry": manifest["registry"],
-    })
+    }, update_pointer=False)
     master_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = master_path.with_name(f".{master_path.name}.tmp")
     temporary.write_text(json.dumps(as_feature_collection(merged), indent=2, sort_keys=True), encoding="utf-8")
@@ -127,4 +155,5 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
         "schema": manifest["schema"],
         "registry": manifest["registry"],
     }, indent=2, sort_keys=True), encoding="utf-8")
+    activate_local_snapshot(public_root, version, expected_pointer_checksum)
     return snapshot
