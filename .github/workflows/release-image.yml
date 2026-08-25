@@ -1,0 +1,104 @@
+name: Release validation-worker image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Protected annotated v* tag to release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    name: Test, publish, and record digest
+    runs-on: ubuntu-latest
+    environment: production-image-release
+    env:
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      SOURCE_REF: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - name: Check required platform configuration
+        run: |
+          test -n "$ACR_NAME"
+          test -n "$ACR_LOGIN_SERVER"
+          test -n "$AZURE_CLIENT_ID"
+          test -n "$AZURE_SUBSCRIPTION_ID"
+          test -n "$AZURE_TENANT_ID"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          fetch-depth: 0
+
+      - name: Verify protected annotated release tag
+        id: release
+        run: |
+          case "$SOURCE_REF" in v*) ;; *) echo "release tag must start with v" >&2; exit 1 ;; esac
+          test "$(git cat-file -t "refs/tags/$SOURCE_REF")" = tag
+          test -n "$(git tag --points-at HEAD | grep -Fx "$SOURCE_REF")"
+          printf 'tag=%s\n' "$SOURCE_REF" >> "$GITHUB_OUTPUT"
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install '.[test]'
+
+      - name: Run Python tests
+        run: pytest
+
+      - name: Run Docker test target
+        run: docker build --target test --tag hrl-restoration-data-pipeline:test .
+
+      - name: Sign in to Azure with the release workload identity
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign in to ACR
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build and push release image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          push: true
+          tags: ${{ env.ACR_LOGIN_SERVER }}/hrl-validation-worker:git-${{ steps.release.outputs.commit }}
+
+      - name: Write image-release handoff
+        run: |
+          package_version="$(python -c 'import tomllib, pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          python scripts/write_image_release.py \
+            --image "$ACR_LOGIN_SERVER/hrl-validation-worker" \
+            --digest "${{ steps.build.outputs.digest }}" \
+            --source-commit "${{ steps.release.outputs.commit }}" \
+            --release-tag "${{ steps.release.outputs.tag }}" \
+            --package-version "$package_version" \
+            --created-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --output image-release.json
+          cat image-release.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload image-release handoff
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-release-${{ steps.release.outputs.tag }}
+          path: image-release.json
+          if-no-files-found: error

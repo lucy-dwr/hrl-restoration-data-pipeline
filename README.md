@@ -139,3 +139,11 @@ docker run --rm -i hrl-restoration-data-pipeline:local \
   --candidates-container private-data --registry /data/registry.json \
   --registry-manifest /data/registry-manifest.json < event-grid-message.json
 ```
+
+## Production image release
+
+The image release boundary is documented in [IMAGE_RELEASE.md](IMAGE_RELEASE.md).
+The release workflow tests a protected, annotated `v*` tag, uses a dedicated
+GitHub OIDC publisher identity to push to ACR, and emits an immutable digest
+handoff. It cannot change Terraform or an Azure job; infrastructure consumes
+the digest only through a reviewed change.
