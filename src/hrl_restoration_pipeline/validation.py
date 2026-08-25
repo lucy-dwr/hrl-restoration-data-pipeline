@@ -14,7 +14,13 @@ from . import __version__
 from .models import Report, Repair
 from .registry import ProjectIdRegistry
 
-SCHEMA_PATH = Path(__file__).parents[2] / "schema-snapshots/hrl-restoration-schema/v1.2.0/hrl_restoration_project.yaml"
+_SNAPSHOT_RELATIVE_PATH = Path("hrl-restoration-schema/v1.2.0/hrl_restoration_project.yaml")
+_SOURCE_SNAPSHOT_PATH = Path(__file__).parents[2] / "schema-snapshots" / _SNAPSHOT_RELATIVE_PATH
+_PACKAGED_SNAPSHOT_PATH = Path(__file__).parent / "_schema_snapshot" / _SNAPSHOT_RELATIVE_PATH
+
+# Keep local source checkouts convenient while making the pinned schema available
+# to the installed wheel used by CI and production entry points.
+SCHEMA_PATH = _SOURCE_SNAPSHOT_PATH if _SOURCE_SNAPSHOT_PATH.is_file() else _PACKAGED_SNAPSHOT_PATH
 MANIFEST_PATH = SCHEMA_PATH.with_name("manifest.json")
 ALLOWED = {"Polygon", "MultiPolygon", "Point", "MultiPoint"}
 SHAPEFILE_FIELD_ALIASES = {
