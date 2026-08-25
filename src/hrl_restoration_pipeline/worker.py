@@ -71,6 +71,26 @@ class AzureBlobStore:
             return False
 
 
+class AzureQueue:
+    """Receive and acknowledge one Storage Queue message with the same runtime credential."""
+    def __init__(self, queue_name: str, connection_string: str | None, account_url: str | None):
+        from azure.storage.queue import QueueClient
+        if connection_string:
+            self.client = QueueClient.from_connection_string(connection_string, queue_name)
+        elif account_url:
+            from azure.identity import DefaultAzureCredential
+            queue_url = account_url.replace(".blob.", ".queue.").rstrip("/") + f"/{queue_name}"
+            self.client = QueueClient(queue_url, credential=DefaultAzureCredential())
+        else:
+            raise ValueError("set HRL_STORAGE_CONNECTION_STRING or HRL_STORAGE_ACCOUNT_URL")
+
+    def receive_one(self):
+        return next(iter(self.client.receive_messages(messages_per_page=1, visibility_timeout=300)), None)
+
+    def acknowledge(self, message) -> None:
+        self.client.delete_message(message.id, message.pop_receipt)
+
+
 def parse_ready_event(message: str | bytes, raw_prefix: str = "raw-submissions") -> ReadyEvent:
     """Accept Event Grid's array envelope and only its exact BlobCreated marker."""
     try:
@@ -221,17 +241,26 @@ class ValidationWorker:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate one Event Grid _READY message; never promotes or publishes.")
-    parser.add_argument("--message-file", type=Path)
+    input_mode = parser.add_mutually_exclusive_group()
+    input_mode.add_argument("--message-file", type=Path)
+    input_mode.add_argument("--queue", help="receive and acknowledge one Storage Queue message")
     parser.add_argument("--raw-container", required=True); parser.add_argument("--reports-container", required=True); parser.add_argument("--candidates-container", required=True)
     parser.add_argument("--raw-prefix", default="raw-submissions"); parser.add_argument("--reports-prefix", default="restoration-projects"); parser.add_argument("--candidates-prefix", default="restoration-projects")
     parser.add_argument("--registry", type=Path, required=True); parser.add_argument("--registry-manifest", type=Path, required=True)
     parser.add_argument("--connection-string", default=os.getenv("HRL_STORAGE_CONNECTION_STRING")); parser.add_argument("--account-url", default=os.getenv("HRL_STORAGE_ACCOUNT_URL"))
     args = parser.parse_args(argv)
-    message = args.message_file.read_text(encoding="utf-8") if args.message_file else sys.stdin.read()
-    if not message.strip(): parser.error("provide --message-file or a queue message on stdin")
+    queue = AzureQueue(args.queue, args.connection_string, args.account_url) if args.queue else None
+    queued_message = queue.receive_one() if queue else None
+    message = args.message_file.read_text(encoding="utf-8") if args.message_file else queued_message.content if queued_message else sys.stdin.read()
+    if not message.strip():
+        if queue:
+            return 0
+        parser.error("provide --message-file, --queue, or a queue message on stdin")
     worker = ValidationWorker(AzureBlobStore(args.connection_string, args.account_url), raw_container=args.raw_container, reports_container=args.reports_container, candidates_container=args.candidates_container, raw_prefix=args.raw_prefix, reports_prefix=args.reports_prefix, candidates_prefix=args.candidates_prefix, registry_path=args.registry, registry_manifest_path=args.registry_manifest)
     try:
         print(worker.process(message))
+        if queue:
+            queue.acknowledge(queued_message)
     except ValueError as exc:
         print(f"validation worker rejected message: {exc}", file=sys.stderr)
         return 2

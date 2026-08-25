@@ -13,6 +13,12 @@ data-file event. The worker re-lists the directory, verifies `_READY` is still
 present, stages source blobs read-only, and uses the existing deterministic
 validator.
 
+In production, invoke it with `--queue validation-requests`. It receives one
+message with a five-minute visibility timeout, acknowledges it only after the
+worker records an idempotent outcome, and leaves unexpected runtime failures
+unacknowledged for Storage Queue retry/dead-letter handling. The stdin and
+`--message-file` modes remain useful for deterministic local tests.
+
 All locations and credentials are runtime configuration. Use either
 `HRL_STORAGE_CONNECTION_STRING` for local development or
 `HRL_STORAGE_ACCOUNT_URL` with managed identity in Azure; do not put either in
