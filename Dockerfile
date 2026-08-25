@@ -31,7 +31,7 @@ RUN python -m pip install --no-cache-dir --editable .
 
 FROM base AS runtime
 
-ENTRYPOINT ["hrl-pipeline"]
+ENTRYPOINT ["hrl-validation-worker"]
 CMD ["--help"]
 
 FROM base AS test

@@ -2,6 +2,51 @@
 
 Local, deterministic ingestion, validation, candidate generation, and publication simulation for HRL restoration projects. It has no Azure orchestration or production database access.
 
+## Queue-triggered validation worker
+
+`hrl-validation-worker` is the container entrypoint for the first Azure-facing
+worker foundation. It receives one Azure Storage Queue body on standard input
+(or `--message-file`) containing exactly one Event Grid `BlobCreated` event.
+It accepts only a `_READY` marker at
+`raw-submissions/<organization>/<submission-id>/_READY`; it never processes a
+data-file event. The worker re-lists the directory, verifies `_READY` is still
+present, stages source blobs read-only, and uses the existing deterministic
+validator.
+
+All locations and credentials are runtime configuration. Use either
+`HRL_STORAGE_CONNECTION_STRING` for local development or
+`HRL_STORAGE_ACCOUNT_URL` with managed identity in Azure; do not put either in
+Git. The registry snapshot and its manifest are mounted/provided as arguments.
+
+```bash
+hrl-validation-worker \
+  --message-file event-grid-message.json \
+  --raw-container private-data \
+  --reports-container private-data \
+  --candidates-container private-data \
+  --registry /run/registry/registry.json \
+  --registry-manifest /run/registry/manifest.json
+```
+
+The event subject must agree with `data.url`. Source paths and SHA-256 checksums
+are included in `validation-report.json`. Failed validation writes a private
+`validation-reports/restoration-projects/<submission-id>/` report with
+`NEEDS_CORRECTION`. A passing submission writes only a private candidate under
+`publication-candidates/restoration-projects/<submission-id>/` with
+`AWAITING_APPROVAL`; this worker has no promotion or public-export code path.
+
+Event Grid delivery is at least once. Completion `status.json` is written last,
+and all artifact writes are create-only, so retries and duplicate messages reuse
+the existing result rather than overwriting it. An interrupted attempt is safe
+to retry because no completion marker exists. Archive intake rejects traversal,
+encrypted files, duplicate entries, excessive member counts, unsafe compression
+ratios, oversized extracted payloads, and incomplete shapefile packages.
+
+`--raw-prefix` defaults to `raw-submissions` when all logical areas share one
+container. When `raw-submissions` is itself a dedicated container, pass
+`--raw-prefix ''`; then the marker is directly
+`<organization>/<submission-id>/_READY` inside that container.
+
 ```bash
 python -m pip install -e '.[test]'
 hrl-pipeline <submission-directory> --registry tests/fixtures/registry.json \
@@ -76,12 +121,15 @@ Build the runtime image:
 docker build --target runtime --tag hrl-restoration-data-pipeline:local .
 ```
 
-The runtime entry point is `hrl-pipeline`; a future Container Apps validation
-job passes the normal validation arguments, while a promotion job starts with
-the `promote` subcommand. For example, with suitable local paths mounted:
+The runtime entry point is `hrl-validation-worker`; pass the queue body on
+standard input (or use `--message-file`) and provide its storage/runtime
+arguments. `hrl-pipeline` remains the local deterministic validator, while the
+existing local-only `promote` command is not part of this worker or container
+entrypoint. For example, with suitable local paths mounted:
 
 ```bash
-docker run --rm hrl-restoration-data-pipeline:local \
-  /data/submission --registry /data/registry.json \
-  --registry-manifest /data/registry-manifest.json --output /data/output
+docker run --rm -i hrl-restoration-data-pipeline:local \
+  --raw-container private-data --reports-container private-data \
+  --candidates-container private-data --registry /data/registry.json \
+  --registry-manifest /data/registry-manifest.json < event-grid-message.json
 ```

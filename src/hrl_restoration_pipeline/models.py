@@ -30,6 +30,7 @@ class Report:
     schema: dict[str, str]
     pipeline_version: str
     validation_timestamp: str
+    source_files: list[dict[str, str]] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     repairs: list[Repair] = field(default_factory=list)
 
@@ -53,5 +54,6 @@ class Report:
                 "pipeline_version": self.pipeline_version, "schema": self.schema,
                 "validation_timestamp": self.validation_timestamp,
                 "registry": self.registry, "error_count": len(self.errors),
+                "source_files": self.source_files,
                 "warning_count": len(self.warnings), "findings": [asdict(x) for x in self.findings],
                 "repairs": [asdict(x) for x in self.repairs]}
