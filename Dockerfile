@@ -36,6 +36,7 @@ CMD ["--help"]
 
 FROM base AS test
 
+COPY scripts/write_image_release.py ./scripts/write_image_release.py
 COPY tests ./tests
 RUN python -m pip install --no-cache-dir --editable '.[test]'
 RUN pytest
