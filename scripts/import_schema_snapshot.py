@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import urlopen
 
-REPOSITORY = "https://github.com/lucy-dwr/hrl-restoration-schema"
-RAW_BASE = "https://raw.githubusercontent.com/lucy-dwr/hrl-restoration-schema"
+REPOSITORY = "https://github.com/Healthy-Rivers-and-Landscapes-Science/hrl-restoration-schema"
+RAW_BASE = "https://raw.githubusercontent.com/Healthy-Rivers-and-Landscapes-Science/hrl-restoration-schema"
 ARTIFACT = "hrl_restoration_project.yaml"
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any
-
-PUBLIC_EXCLUDED = {"contact_name", "contact_email", "contractors", "funding_secured", "funding_gap", "estimated_budget_comments", "construction_completion_year_comments", "source_project_id", "source_organization_code", "last_submission_id", "source_data_as_of", "update_date"}
+from .validation import SCHEMA_PATH
+from linkml_runtime.utils.schemaview import SchemaView
 
 def canonicalize(records: list[dict[str, Any]], manifest: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
@@ -15,7 +15,13 @@ def canonicalize(records: list[dict[str, Any]], manifest: dict[str, Any]) -> lis
     return sorted(out, key=lambda x: x["project_id"])
 
 def publicize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [{k: v for k, v in record.items() if k not in PUBLIC_EXCLUDED} for record in records]
+    public_fields = {slot.name for slot in SchemaView(str(SCHEMA_PATH)).class_induced_slots("RestorationProjectPublicRecord")}
+    public_fields.add("geometry")
+    return [
+        {key: value for key, value in record.items() if key in public_fields}
+        for record in records
+        if record.get("record_status") == "active"
+    ]
 
 def as_feature_collection(records: list[dict[str, Any]]) -> dict[str, Any]:
     # Candidate and local-publication geometries have been reprojected during

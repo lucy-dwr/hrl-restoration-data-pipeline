@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, hashlib, json
+import argparse, hashlib, json, os
 from pathlib import Path
 from .ingestion import load_submission
 from .registry import SnapshotRegistry
@@ -12,7 +12,7 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_candidate_manifest(directory: Path, report) -> None:
+def _write_candidate_manifest(directory: Path, report, submission_manifest: dict) -> None:
     artifacts = {name: _sha256(directory / name) for name in (
         "canonical-candidate.geojson", "public-candidate.geojson", "status.json",
         "validation-report.json", "validation-report.html", "validation-report.pdf",
@@ -23,6 +23,11 @@ def _write_candidate_manifest(directory: Path, report) -> None:
         "pipeline_version": report.pipeline_version,
         "schema": report.schema,
         "registry": report.registry,
+        "submission_data_steward": {
+            "name": submission_manifest["data_steward_name"],
+            "email": submission_manifest["data_steward_email"],
+        },
+        "ingested_by": os.environ.get("HRL_INGESTION_ACTOR", "hrl-restoration-pipeline"),
         "artifacts": artifacts,
     }
     directory.joinpath("candidate-manifest.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -55,7 +60,7 @@ def _validate_main(argv: list[str] | None = None) -> int:
             candidate_ready = True
     write_reports(report, args.output)
     if candidate_ready:
-        _write_candidate_manifest(args.output, report)
+        _write_candidate_manifest(args.output, report, manifest)
     return 0 if not report.errors else 2
 
 

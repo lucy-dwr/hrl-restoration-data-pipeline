@@ -1,0 +1,9 @@
+{
+  "upstream_repository": "https://github.com/Healthy-Rivers-and-Landscapes-Science/hrl-restoration-schema",
+  "tag": "v1.3.1",
+  "commit_sha": "fe5633a6a0e4dc240483bdfd2787909ff4fce7e3",
+  "retrieved_at": "2026-08-27T23:14:43Z",
+  "artifacts": {
+    "hrl_restoration_project.yaml": "5520e2152a5fe1e7d9a3be0d2bd34d54dd187ee287c291e602a4af32ca90552a"
+  }
+}

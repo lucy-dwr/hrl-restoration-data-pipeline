@@ -100,7 +100,7 @@ def test_malformed_delivery_becomes_an_unattributed_private_correction_report(tm
 def test_missing_primary_and_unsupported_primary_are_correction_reports(tmp_path):
     store = MemoryBlobStore()
     prefix = "raw-submissions/dwr/s1/"
-    manifest = {"submission_id": "s1", "organization": "DWR", "organization_code": "DWR", "dataset_name": "test", "submission_type": "update", "submission_scope": "partial_update", "data_as_of": "2026-08-20", "primary_file": "projects.csv"}
+    manifest = {"submission_id": "s1", "organization": "DWR", "organization_code": "DWR", "dataset_name": "test", "submission_type": "update", "submission_scope": "partial_update", "data_as_of": "2026-08-20", "data_steward_name": "Example Steward", "data_steward_email": "steward@example.org", "primary_file": "projects.csv"}
     store.blobs[("private", prefix + "submission.json")] = json.dumps(manifest).encode()
     store.blobs[("private", prefix + "projects.csv")] = b"not supported"
     store.blobs[("private", prefix + "_READY")] = b""
@@ -110,7 +110,7 @@ def test_missing_primary_and_unsupported_primary_are_correction_reports(tmp_path
 
 
 def test_archive_safety_rejects_traversal_and_oversized_ratio(tmp_path):
-    manifest = {"submission_id": "s1", "organization": "DWR", "organization_code": "DWR", "dataset_name": "test", "submission_type": "update", "submission_scope": "partial_update", "data_as_of": "2026-08-20", "primary_file": "projects.zip"}
+    manifest = {"submission_id": "s1", "organization": "DWR", "organization_code": "DWR", "dataset_name": "test", "submission_type": "update", "submission_scope": "partial_update", "data_as_of": "2026-08-20", "data_steward_name": "Example Steward", "data_steward_email": "steward@example.org", "primary_file": "projects.zip"}
     (tmp_path / "submission.json").write_text(json.dumps(manifest))
     with zipfile.ZipFile(tmp_path / "projects.zip", "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("../projects.shp", b"x")

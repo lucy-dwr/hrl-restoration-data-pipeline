@@ -62,9 +62,24 @@ pytest
 
 Validation writes authoritative `validation-report.json` plus prominent HTML and PDF companion reports. A successful validation creates schema-validated `canonical-candidate.geojson` and privacy-filtered `public-candidate.geojson`; it is still `AWAITING_APPROVAL`. Local publication is available through `publication.publish_local` and creates immutable directories plus `current.json`.
 
+## Submission stewardship and audit trail
+
+Every `submission.json` must identify the organization submitting the dataset and
+the person accountable for assembling it with nonempty `data_steward_name` and
+valid `data_steward_email` fields. This accommodates an integrated submission:
+project-level contacts remain optional and private, while the data steward is
+the appropriate contact for the delivered dataset.
+
+The generated private candidate manifest records that steward and the pipeline
+ingestion actor. Set `HRL_INGESTION_ACTOR` in a trusted runtime to identify the
+worker or authenticated intake identity; otherwise it records
+`hrl-restoration-pipeline`. Promotion additionally writes the approving actor
+from `_APPROVE` into its private audit record. None of these fields are added to
+the public export.
+
 ## Updating the schema snapshot
 
-The configured schema is `hrl-restoration-schema` **v1.2.0**, pinned to its immutable commit and checksum in `schema-snapshots/`. Never edit an existing snapshot or follow the upstream default branch at runtime.
+The configured schema is `hrl-restoration-schema` **v1.3.1**, pinned to its immutable commit and checksum in `schema-snapshots/`. Never edit an existing snapshot or follow the upstream default branch at runtime.
 
 After an approved schema release, use a review branch and run:
 

@@ -1,0 +1,857 @@
+# This file is written in YAML. Indentation matters: nested lines belong to the
+# item above them. Lines starting with # are notes for humans and are ignored by
+# LinkML and other YAML readers.
+#
+# LinkML is a schema language. In this file, it describes the structure of HRL
+# restoration project records: which fields exist, which fields are required,
+# what data type each field uses, and which controlled vocabulary values are
+# allowed.
+
+id: https://healthy-rivers-and-landscapes-science.github.io/hrl-restoration-schema/
+name: hrl_restoration_schema
+title: HRL Restoration Spatial Data Schema
+description: Schema for HRL restoration spatial data submissions.
+
+license: https://creativecommons.org/publicdomain/zero/1.0/
+
+# Prefixes define short names for longer web identifiers. They help LinkML give
+# each schema element a stable, globally meaningful name without repeating the
+# full URL everywhere.
+prefixes:
+  linkml: https://w3id.org/linkml/
+  hrl: https://healthy-rivers-and-landscapes-science.github.io/hrl-restoration-schema/
+
+default_prefix: hrl
+default_range: string
+
+# Imports bring in standard LinkML definitions. linkml:types provides common
+# data types such as string, integer, decimal, boolean, and date.
+imports:
+  - linkml:types
+
+# Classes are record shapes. Each class says which fields (called slots in
+# LinkML) appear together for a particular kind of record.
+#
+# LinkML classes can inherit from other classes with `is_a`. A child class gets
+# the slots and rules from its parent, then adds or overrides only the pieces
+# that are different.
+classes:
+  RestorationProjectRecord:
+    abstract: true
+    description: >-
+      Shared restoration project fields used by both submitted records and
+      standardized canonical records. This class deliberately excludes
+      internal provenance and lifecycle fields; those belong only to the
+      canonical profile.
+    # This abstract class is a template, not a record type to validate directly.
+    # It keeps the common project fields and default required flags in one
+    # place.
+    slots:
+      - project_id
+      - project_name
+      - project_description
+      - project_stage
+      - contact_name
+      - contact_email
+      - lead_entity
+      - contractors
+      - early_implementation
+      - construction_start_year
+      - construction_completion_year
+      - construction_completion_year_comments
+      - estimated_budget
+      - estimated_budget_comments
+      - funding_secured
+      - funding_sources
+      - system
+      - project_type
+      - acreage
+      - acreage_bypass_floodplain
+      - acreage_fish_food
+      - acreage_tributary_floodplain
+      - acreage_tributary_rearing
+      - acreage_tributary_spawning
+      - acreage_tidal_wetland
+      - target_species
+      - geometry
+    # slot_usage customizes how the general slot definitions apply to this
+    # class. Here, it makes the default required and optional fields explicit
+    # for shared project fields.
+    slot_usage:
+      project_id:
+        required: true
+      project_name:
+        required: true
+      project_description:
+        required: false
+      project_stage:
+        required: true
+      contact_name:
+        required: false
+      contact_email:
+        required: false
+      lead_entity:
+        required: true
+      contractors:
+        required: false
+      early_implementation:
+        required: true
+      construction_start_year:
+        required: false
+      construction_completion_year:
+        required: false
+      construction_completion_year_comments:
+        required: false
+      estimated_budget:
+        required: false
+      estimated_budget_comments:
+        required: false
+      funding_secured:
+        required: false
+      funding_sources:
+        required: false
+      system:
+        required: true
+      project_type:
+        required: true
+      acreage:
+        required: false
+      acreage_bypass_floodplain:
+        required: false
+      acreage_fish_food:
+        required: false
+      acreage_tributary_floodplain:
+        required: false
+      acreage_tributary_rearing:
+        required: false
+      acreage_tributary_spawning:
+        required: false
+      acreage_tidal_wetland:
+        required: false
+      target_species:
+        required: false
+      geometry:
+        required: true
+
+  # This class inherits the shared project fields from RestorationProjectRecord
+  # without adding submission-specific fields.
+  RestorationProjectSubmission:
+    is_a: RestorationProjectRecord
+    tree_root: true
+    description: >-
+      Fields expected in a submitted HRL restoration spatial data file. This
+      profile requires a pre-assigned HRL project ID. Conditional requiredness
+      and registry checks are enforced by the data pipeline.
+    slots:
+      - funding_gap
+    slot_usage:
+      lead_entity:
+        range: string
+        description: >-
+          One or more full organization names, abbreviations, or approved
+          aliases from the program-level lead-entity catalog. The validation
+          pipeline resolves these submitted values to stable LeadEntityEnum IDs
+          before canonicalization.
+      funding_gap:
+        required: false
+
+  # This class describes the standardized internal record after validation and
+  # ingestion, so it adds program-assigned fields to the shared project fields.
+  RestorationProjectCanonicalRecord:
+    is_a: RestorationProjectRecord
+    description: >-
+      Standardized HRL restoration project record after validation,
+      standardization, and ingestion. This profile includes program-assigned
+      and derived fields.
+    slots:
+      - funding_gap
+      - source_project_id
+      - source_organization_code
+      - last_submission_id
+      - source_data_as_of
+      - record_status
+      - update_date
+    # These required flags are canonical-record-specific. funding_gap is a
+    # derived field populated after canonical transformation when both funding
+    # inputs are available; early-stage records may legitimately omit it.
+    slot_usage:
+      project_id:
+        required: true
+      funding_gap:
+        required: false
+      source_organization_code:
+        required: true
+      last_submission_id:
+        required: true
+      source_data_as_of:
+        required: true
+      record_status:
+        required: true
+      update_date:
+        required: true
+
+  RestorationProjectPublicRecord:
+    description: >-
+      Public export contract produced by the pipeline from approved active
+      canonical records. It intentionally excludes lifecycle, contact,
+      contractor, funding, and provenance fields that are not approved for
+      publication.
+    tree_root: true
+    slots:
+      - project_id
+      - project_name
+      - project_description
+      - project_stage
+      - lead_entity
+      - early_implementation
+      - construction_start_year
+      - construction_completion_year
+      - estimated_budget
+      - funding_sources
+      - system
+      - project_type
+      - acreage
+      - acreage_bypass_floodplain
+      - acreage_fish_food
+      - acreage_tributary_floodplain
+      - acreage_tributary_rearing
+      - acreage_tributary_spawning
+      - acreage_tidal_wetland
+      - target_species
+      - geometry
+    slot_usage:
+      project_id:
+        required: true
+      project_name:
+        required: true
+      project_description:
+        required: true
+      project_stage:
+        required: true
+      lead_entity:
+        required: true
+      early_implementation:
+        required: true
+      system:
+        required: true
+      project_type:
+        required: true
+      target_species:
+        required: false
+      geometry:
+        required: true
+
+  LeadEntity:
+    description: >-
+      Canonical organization that may serve as the lead entity for an HRL
+      restoration project.
+    slots:
+      - lead_entity_id
+      - full_name
+      - abbreviation
+      - organization_type
+      - aliases
+    slot_usage:
+      lead_entity_id:
+        required: true
+      full_name:
+        required: true
+      abbreviation:
+        required: false
+      organization_type:
+        required: true
+      aliases:
+        required: false
+
+  LeadEntityCatalog:
+    description: Program-level controlled list of HRL lead entities.
+    slots:
+      - lead_entities
+
+# Slots are field definitions. A slot can be reused in multiple classes. These
+# definitions describe the field's title, meaning, data type, validation rules,
+# and implementation notes.
+slots:
+  project_id:
+    title: Project ID
+    description: >-
+      Stable identifier assigned by the HRL program and matched against the
+      program project-ID registry.
+    range: string
+    identifier: true
+    comments:
+      - >-
+        Program-assigned stable identifier. It must be supplied with every
+        submission, match an existing program project-ID registry entry, never
+        be reused, and must not be changed to identify a different project.
+
+  project_name:
+    title: Project name
+    description: Name of the project.
+    range: string
+    comments:
+      - >-
+        This name will be treated as canonical for HRL purposes; verbose names
+        are preferred over brief or acronym-heavy names.
+
+  project_description:
+    title: Project description
+    description: >-
+      Brief description of the project. Optional during submission and
+      canonical processing, but required for public publication.
+    range: string
+    annotations:
+      max_length: "500"
+    comments:
+      - >-
+        Free text with 500 character limit; text beyond the character limit
+        will be truncated during standardization.
+
+  project_stage:
+    title: Project stage
+    description: Stage the project is in at the time of data submission.
+    range: ProjectStageEnum
+    multivalued: true
+    annotations:
+      submission_serialization: semicolon_delimited
+    comments:
+      - >-
+        Select many; submitted spatial files may represent multiple values as a
+        semicolon-delimited string.
+
+  contact_name:
+    title: Contact name
+    description: Name of the primary contact for the project.
+    range: string
+    comments:
+      - >-
+        This should be the name of someone working at the HRL signatory entity,
+        not the name of a contractor.
+
+  contact_email:
+    title: Contact email address
+    description: Email address of the lead entity primary contact for the project.
+    range: string
+    pattern: "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+
+  lead_entity:
+    title: Lead entity
+    description: >-
+      Entity responsible for the project. Canonical and public records use
+      stable controlled identifiers; submission records may use a cataloged
+      full name, abbreviation, or approved alias that the pipeline resolves.
+    range: LeadEntityEnum
+    multivalued: true
+    annotations:
+      submission_serialization: semicolon_delimited
+    comments:
+      - >-
+        Canonical and public records use stable IDs from the program-level key
+        table. Submitters may provide a cataloged full name, abbreviation, or
+        alias. The pipeline rejects unknown or ambiguous submitted values and
+        writes the resolved stable IDs to canonical and public records.
+
+  lead_entity_id:
+    title: Lead entity ID
+    description: Stable controlled identifier for a lead entity.
+    range: LeadEntityEnum
+    identifier: true
+
+  full_name:
+    title: Full name
+    description: Official or preferred full name of the lead entity.
+    range: string
+
+  abbreviation:
+    title: Abbreviation
+    description: Common abbreviation or acronym for the lead entity.
+    range: string
+
+  organization_type:
+    title: Organization type
+    description: Broad type of organization.
+    range: OrganizationTypeEnum
+
+  aliases:
+    title: Aliases
+    description: Other names, abbreviations, or source labels used for the same entity.
+    range: string
+    multivalued: true
+
+  lead_entities:
+    title: Lead entities
+    description: Controlled lead entity records.
+    range: LeadEntity
+    multivalued: true
+    inlined: true
+    inlined_as_list: true
+
+  contractors:
+    title: Contractor(s)
+    description: Contractor(s) working on the project data.
+    range: string
+    multivalued: true
+    annotations:
+      submission_serialization: semicolon_delimited
+    comments:
+      - >-
+        Contractors may be working with spatial and/or monitoring data and
+        should not be exclusively construction contractors.
+
+  early_implementation:
+    title: Early implementation
+    description: Whether the project is early implementation or not.
+    range: boolean
+
+  construction_start_year:
+    title: Anticipated construction start year
+    description: Estimated year of project construction initiation.
+    range: integer
+    minimum_value: 2018
+    maximum_value: 2035
+
+  construction_completion_year:
+    title: Anticipated construction completion year
+    description: Estimated year of project construction completion.
+    range: integer
+    minimum_value: 2018
+    maximum_value: 2040
+
+  construction_completion_year_comments:
+    title: Comments on anticipated completion year
+    description: Additional notes on project construction completion year.
+    range: string
+    annotations:
+      max_length: "250"
+    comments:
+      - >-
+        Free text with 250 character limit; text beyond the character limit
+        will be truncated during validation or standardization.
+
+  estimated_budget:
+    title: Estimated total budget
+    description: Estimated total project costs.
+    range: integer
+    minimum_value: 0
+
+  estimated_budget_comments:
+    title: Comments on estimated total budget
+    description: >-
+      Comments on estimated total budget, including what is incorporated in that
+      value, if desired.
+    range: string
+    annotations:
+      max_length: "500"
+    comments:
+      - >-
+        Free text with 500 character limit; text beyond the character limit
+        will be truncated during validation or standardization.
+
+  funding_secured:
+    title: Funding secured
+    description: The total dollar value of funding already secured for the project.
+    range: integer
+    minimum_value: 0
+    comments:
+      - Will not be publicly displayed.
+
+  funding_gap:
+    title: Funding gap
+    description: >-
+      Calculated canonical gap between estimated total budget and funding
+      secured; a numeric legacy submission value may be supplied when the
+      source budget fields are insufficient to calculate it. It is absent when
+      the source financial inputs are not yet available.
+    range: integer
+    comments:
+      - >-
+        Canonical value is normally calculated as estimated_budget minus
+        funding_secured. A supplied legacy submission value is not
+        authoritative when both source budget fields are present: the pipeline
+        recalculates the value and warns if it differs. When those fields are
+        insufficient to calculate the gap, the pipeline may pass through a
+        numeric supplied value with a warning. This field is excluded from
+        public records.
+
+  funding_sources:
+    title: Funding sources
+    description: >-
+      List of grants, appropriated funds, or other sources used to fund all or
+      portions of the project.
+    range: string
+    multivalued: true
+    annotations:
+      submission_serialization: semicolon_delimited
+    comments:
+      - Do not indicate amount from each source; just name the sources.
+
+  system:
+    title: System
+    description: River system or region associated with project.
+    range: SystemEnum
+
+  project_type:
+    title: Project type(s)
+    description: Type(s) of project.
+    range: ProjectTypeEnum
+    multivalued: true
+    annotations:
+      submission_serialization: semicolon_delimited
+    comments:
+      - >-
+        Select many; submitted spatial files may represent multiple values as a
+        semicolon-delimited string.
+
+  acreage:
+    title: Total project acreage
+    description: Total project acreage restored as habitat.
+    range: decimal
+    minimum_value: 0
+    comments:
+      - >-
+        Each acre should be counted once, even if it provides different habitat
+        types at different times of year or flow rates.
+      - >-
+        Required at construction and post-construction monitoring stages unless
+        project_type contains only fish screen installation or improvement
+        and/or fish passage improvement. Earlier-stage submissions may omit it.
+
+  acreage_bypass_floodplain:
+    title: Bypass floodplain acreage
+    description: Project acreage that is bypass floodplain habitat.
+    range: decimal
+    minimum_value: 0
+    comments:
+      - Should be the acreage anticipated to be verified through the HRL accounting process.
+
+  acreage_fish_food:
+    title: Fish food production acreage
+    description: Project acreage that is for fish food production.
+    range: decimal
+    minimum_value: 0
+    comments:
+      - Should be the acreage anticipated to be verified through the HRL accounting process.
+
+  acreage_tributary_floodplain:
+    title: Tributary floodplain habitat acreage
+    description: Project acreage that is tributary floodplain habitat.
+    range: decimal
+    minimum_value: 0
+    comments:
+      - Should be the acreage anticipated to be verified through the HRL accounting process.
+
+  acreage_tributary_rearing:
+    title: Tributary rearing habitat acreage
+    description: Project acreage that is tributary rearing habitat.
+    range: decimal
+    minimum_value: 0
+    comments:
+      - Should be the acreage anticipated to be verified through the HRL accounting process.
+
+  acreage_tributary_spawning:
+    title: Tributary spawning habitat acreage
+    description: Project acreage that is tributary spawning habitat.
+    range: decimal
+    minimum_value: 0
+    comments:
+      - Should be the acreage anticipated to be verified through the HRL accounting process.
+
+  acreage_tidal_wetland:
+    title: Tidal wetland habitat acreage
+    description: Project acreage that is tidal wetlands habitat.
+    range: decimal
+    minimum_value: 0
+    comments:
+      - Should be the acreage anticipated to be verified through the HRL accounting process.
+
+  target_species:
+    title: Target species
+    description: Species targeted by the project, when the project identifies one or more species targets.
+    range: TargetSpeciesEnum
+    multivalued: true
+    annotations:
+      submission_serialization: semicolon_delimited
+    comments:
+      - When supplied, must use controlled vocabulary values from TargetSpeciesEnum.
+
+  geometry:
+    title: Geometry
+    description: Spatial representation of project location or footprint.
+    range: string
+    comments:
+      - >-
+        Geometry is represented by the spatial feature geometry column in
+        submitted GeoPackage or zipped shapefile data, not as a normal attribute
+        field.
+      - Allowable submitted geometry types are POLYGON, MULTIPOLYGON, POINT, and MULTIPOINT.
+      - >-
+        Spatial features will be centralized as MULTIPOLYGON and MULTIPOINT
+        objects during validation and ingestion.
+      - Submitted spatial data must include a defined coordinate reference system.
+      - >-
+        Data may be submitted in common California projected coordinate systems
+        or WGS84 latitude/longitude, but all geometries will be transformed to
+        NAD83 / California Albers, EPSG:3310.
+      - >-
+        Geometry validity, CRS checks, extent checks, sliver checks, duplicate
+        geometry checks, and project-type-specific geometry rules are
+        responsibilities of validation code.
+    annotations:
+      geometry_required: "true"
+      allowable_geometry_types: "POLYGON; MULTIPOLYGON; POINT; MULTIPOINT"
+      standardized_crs_epsg: "3310"
+      input_crs_required: "true"
+
+  update_date:
+    title: Last update
+    description: Date of last update.
+    range: date
+    comments:
+      - Program-assigned field. Automatically assigned upon record creation or update.
+
+  source_project_id:
+    title: Source project ID
+    description: Stable identifier used by the source organization when distinct from the HRL project ID.
+    range: string
+    comments:
+      - Canonical-only provenance field. Not included in public exports.
+
+  source_organization_code:
+    title: Source organization code
+    description: Stable code for the organization that supplied the most recently approved record.
+    range: string
+    comments:
+      - Canonical-only provenance field. Not included in public exports.
+
+  last_submission_id:
+    title: Last submission ID
+    description: Identifier of the most recently approved submission that supplied the record.
+    range: string
+    comments:
+      - Canonical-only provenance field. Not included in public exports.
+
+  source_data_as_of:
+    title: Source data as of
+    description: Date through which the submitter considered the source data current.
+    range: date
+    comments:
+      - Canonical-only provenance field derived from the approved submission manifest. Not included in public exports.
+
+  record_status:
+    title: Record status
+    description: Explicit lifecycle state of the canonical project record.
+    range: RecordStatusEnum
+    comments:
+      - >-
+        Retirement and supersession require an explicit approved canonical
+        update. Absence from a later submission does not change this value.
+
+# Enums are controlled vocabularies. A slot whose range is an enum can only use
+# one of that enum's permissible_values.
+enums:
+  RecordStatusEnum:
+    description: Permissible lifecycle states for an internal canonical record.
+    permissible_values:
+      active:
+      retired:
+      superseded:
+
+  LeadEntityEnum:
+    description: Controlled identifiers for HRL lead entities.
+    permissible_values:
+      dwr:
+        description: California Department of Water Resources
+        annotations:
+          full_name: California Department of Water Resources
+          abbreviation: DWR
+          aliases: Department of Water Resources; CA Department of Water Resources; California DWR
+      ebmud:
+        description: East Bay Municipal Utility District
+        annotations:
+          full_name: East Bay Municipal Utility District
+          abbreviation: EBMUD
+          aliases: East Bay MUD
+      water_forum:
+        description: Water Forum
+        annotations:
+          full_name: Water Forum
+          aliases: The Water Forum
+      sfpuc:
+        description: San Francisco Public Utilities Commission
+        annotations:
+          full_name: San Francisco Public Utilities Commission
+          abbreviation: SFPUC
+          aliases: San Francisco PUC; SF Public Utilities Commission
+      yuba_water_agency:
+        description: Yuba Water Agency
+        annotations:
+          full_name: Yuba Water Agency
+          abbreviation: YWA
+          aliases: Yuba County Water Agency
+      solano_county_water_agency:
+        description: Solano County Water Agency
+        annotations:
+          full_name: Solano County Water Agency
+          abbreviation: SCWA
+          aliases: Solano Water Agency
+      sutter_butte_flood_control_agency:
+        description: Sutter Butte Flood Control Agency
+        annotations:
+          full_name: Sutter Butte Flood Control Agency
+          abbreviation: SBFCA
+      river_partners:
+        description: River Partners
+        annotations:
+          full_name: River Partners
+      modesto_irrigation_district:
+        description: Modesto Irrigation District
+        annotations:
+          full_name: Modesto Irrigation District
+          abbreviation: MID
+      turlock_irrigation_district:
+        description: Turlock Irrigation District
+        annotations:
+          full_name: Turlock Irrigation District
+          abbreviation: TID
+      south_yuba_river_citizens_league:
+        description: South Yuba River Citizens League
+        annotations:
+          full_name: South Yuba River Citizens League
+          abbreviation: SYRCL
+          aliases: South Yuba River Citizen League
+
+  OrganizationTypeEnum:
+    description: Permissible values for organization_type.
+    permissible_values:
+      state_agency:
+      local_agency:
+      special_district:
+      regional_partnership:
+      other:
+
+  ProjectStageEnum:
+    description: Permissible values for project_stage.
+    permissible_values:
+      concept/feasibility:
+      CEQA:
+      permitting:
+      design:
+      construction:
+      post-construction monitoring and science:
+
+  SystemEnum:
+    description: Permissible values for system.
+    permissible_values:
+      American:
+      Delta:
+      Feather:
+      Mokelumne:
+      Putah:
+      Sacramento:
+      Sutter Bypass:
+      Tuolumne:
+      Yolo Bypass:
+      Yuba:
+      Other:
+
+  ProjectTypeEnum:
+    description: Permissible values for project_type.
+    permissible_values:
+      bypass floodplain habitat:
+      fish food production:
+      fish passage improvement:
+      fish screen installation or improvement:
+      rearing habitat:
+      spawning habitat:
+      tidal habitat:
+      tributary floodplain habitat:
+      other:
+
+  TargetSpeciesEnum:
+    description: Permissible values for target_species.
+    permissible_values:
+      Pacific lamprey:
+        annotations:
+          group: Lampreys
+      River lamprey:
+        annotations:
+          group: Lampreys
+      Western brook lamprey:
+        annotations:
+          group: Lampreys
+      White sturgeon:
+        annotations:
+          group: Sturgeons
+      Green sturgeon:
+        annotations:
+          group: Sturgeons
+      Chinook salmon:
+        annotations:
+          group: Salmonids
+      Steelhead trout:
+        annotations:
+          group: Salmonids
+      California roach:
+        annotations:
+          group: Minnows and related fishes
+      Hardhead:
+        annotations:
+          group: Minnows and related fishes
+      Hitch:
+        annotations:
+          group: Minnows and related fishes
+      Sacramento blackfish:
+        annotations:
+          group: Minnows and related fishes
+      Sacramento pikeminnow:
+        annotations:
+          group: Minnows and related fishes
+      Sacramento splittail:
+        annotations:
+          group: Minnows and related fishes
+      Speckled dace:
+        annotations:
+          group: Minnows and related fishes
+      Sacramento sucker:
+        annotations:
+          group: Suckers
+      Delta smelt:
+        annotations:
+          group: Smelts
+      Longfin smelt:
+        annotations:
+          group: Smelts
+      Threespine stickleback:
+        annotations:
+          group: Sticklebacks
+      Sacramento perch:
+        annotations:
+          group: Sunfish
+      Tule perch:
+        annotations:
+          group: Surfperches
+      Prickly sculpin:
+        annotations:
+          group: Sculpins
+      Riffle sculpin:
+        annotations:
+          group: Sculpins
+      Pacific staghorn sculpin:
+        annotations:
+          group: Estuarine sculpins
+      Starry flounder:
+        annotations:
+          group: Flatfishes
+      Tidewater goby:
+        annotations:
+          group: Gobies
+
+  GeometryTypeEnum:
+    description: >-
+      Permissible submitted geometry types. This enum documents the spatial
+      policy; geometry validation is performed by geospatial validation code.
+    permissible_values:
+      POINT:
+      MULTIPOINT:
+      POLYGON:
+      MULTIPOLYGON:

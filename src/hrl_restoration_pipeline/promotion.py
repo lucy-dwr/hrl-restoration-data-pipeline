@@ -34,9 +34,15 @@ def _candidate_manifest(candidate_directory: Path) -> tuple[dict[str, Any], str]
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("candidate-manifest.json is required and must contain JSON") from exc
-    required = {"submission_id", "status", "pipeline_version", "schema", "registry", "artifacts"}
+    required = {
+        "submission_id", "status", "pipeline_version", "schema", "registry",
+        "submission_data_steward", "ingested_by", "artifacts",
+    }
     if (not isinstance(manifest, dict) or not required <= set(manifest)
             or not isinstance(manifest["artifacts"], dict)
+            or not isinstance(manifest["submission_data_steward"], dict)
+            or not all(isinstance(manifest["submission_data_steward"].get(key), str) and manifest["submission_data_steward"][key].strip() for key in {"name", "email"})
+            or not isinstance(manifest["ingested_by"], str) or not manifest["ingested_by"].strip()
             or set(manifest["artifacts"]) != CANDIDATE_ARTIFACTS):
         raise ValueError("candidate-manifest.json is incomplete")
     for name, expected in manifest["artifacts"].items():
@@ -150,6 +156,9 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
     audit_path.write_text(json.dumps({
         "snapshot_version": version,
         "submission_id": approval["submission_id"],
+        "data_steward": manifest["submission_data_steward"],
+        "ingested_by": manifest["ingested_by"],
+        "approved_by": approval["approved_by"],
         "approved_at": approval["approved_at"],
         "candidate_manifest_sha256": manifest_checksum,
         "schema": manifest["schema"],

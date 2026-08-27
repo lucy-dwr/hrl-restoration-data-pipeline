@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -14,7 +15,7 @@ from . import __version__
 from .models import Report, Repair
 from .registry import ProjectIdRegistry
 
-_SNAPSHOT_RELATIVE_PATH = Path("hrl-restoration-schema/v1.2.0/hrl_restoration_project.yaml")
+_SNAPSHOT_RELATIVE_PATH = Path("hrl-restoration-schema/v1.3.1/hrl_restoration_project.yaml")
 _SOURCE_SNAPSHOT_PATH = Path(__file__).parents[2] / "schema-snapshots" / _SNAPSHOT_RELATIVE_PATH
 _PACKAGED_SNAPSHOT_PATH = Path(__file__).parent / "_schema_snapshot" / _SNAPSHOT_RELATIVE_PATH
 
@@ -39,6 +40,10 @@ def schema_provenance() -> dict[str, str]:
 def _normalize(record: dict[str, Any], report: Report) -> dict[str, Any]:
     result = deepcopy(record); rid = str(record.get("project_id") or "<missing>")
     for key, value in list(result.items()):
+        if isinstance(value, float) and math.isnan(value):
+            result.pop(key)
+            report.repairs.append(Repair(rid, key, value, None, "nan_to_missing", __version__))
+            continue
         if isinstance(value, str):
             trimmed = value.strip()
             if trimmed != value:
@@ -49,6 +54,53 @@ def _normalize(record: dict[str, Any], report: Report) -> dict[str, Any]:
             result[key] = new
             report.repairs.append(Repair(rid, key, old, new, "semicolon_to_list", __version__))
     return result
+
+
+def _annotation_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
+
+
+def _lead_entity_catalog(view: SchemaView) -> dict[str, set[str]]:
+    """Return normalized submitted labels mapped to stable entity IDs."""
+    entity_enum = view.get_enum("LeadEntityEnum")
+    catalog: dict[str, set[str]] = {}
+    for entity_id, definition in entity_enum.permissible_values.items():
+        labels = {entity_id, definition.description or ""}
+        annotations = definition.annotations or {}
+        for key in ("full_name", "abbreviation"):
+            if key in annotations:
+                labels.add(_annotation_value(annotations[key]))
+        if "aliases" in annotations:
+            labels.update(_annotation_value(annotations["aliases"]).split(";"))
+        for label in labels:
+            normalized = " ".join(label.split()).casefold()
+            if normalized:
+                catalog.setdefault(normalized, set()).add(entity_id)
+    return catalog
+
+
+def _resolve_lead_entities(record: dict[str, Any], catalog: dict[str, set[str]], report: Report, rid: str) -> None:
+    submitted = record.get("lead_entity")
+    values = submitted if isinstance(submitted, list) else [submitted]
+    resolved: list[str] = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        label = str(value)
+        candidates = catalog.get(" ".join(label.split()).casefold(), set())
+        if not candidates:
+            report.add("controlled_vocabulary", "ERROR", "lead_entity_unknown", f"lead_entity is not in the program catalog: {label!r}", rid)
+            continue
+        if len(candidates) > 1:
+            report.add("controlled_vocabulary", "ERROR", "lead_entity_ambiguous", f"lead_entity matches multiple program entities: {label!r}", rid)
+            continue
+        entity_id = next(iter(candidates))
+        if entity_id not in resolved:
+            resolved.append(entity_id)
+        if label != entity_id:
+            report.repairs.append(Repair(rid, "lead_entity", label, entity_id, "lead_entity_catalog_match", __version__))
+    if submitted is not None:
+        record["lead_entity"] = resolved
 
 
 def validate_linkml_profile(record: dict[str, Any], class_name: str) -> str | None:
@@ -69,9 +121,18 @@ def validate_linkml_profile(record: dict[str, Any], class_name: str) -> str | No
 def candidate_profile_errors(records: list[dict[str, Any]], class_name: str) -> list[tuple[str, str]]:
     """Validate generated candidate records against their distinct LinkML profile."""
     errors = []
+    required = {
+        slot.name
+        for slot in SchemaView(str(SCHEMA_PATH)).class_induced_slots(class_name)
+        if slot.required
+    }
     for record in records:
+        record_id = str(record.get("project_id", "<missing>"))
+        for slot_name in required:
+            if record.get(slot_name) in (None, "", []):
+                errors.append((record_id, f"required field {slot_name} is missing or blank"))
         error = validate_linkml_profile(record, class_name)
-        if error: errors.append((str(record.get("project_id", "<missing>")), error))
+        if error: errors.append((record_id, error))
     return errors
 
 
@@ -85,9 +146,11 @@ def validate_records(records: list[dict[str, Any]], registry: ProjectIdRegistry,
     required = {s.name for s in slots if s.required}
     valid_values = {enum.name: set(enum.permissible_values) for enum in view.all_enums().values()}
     enum_slots = {s.name: s.range for s in slots if s.range in valid_values}
+    lead_entity_catalog = _lead_entity_catalog(view)
     seen: set[str] = set()
     for index, record in enumerate(normalized):
         rid = str(record.get("project_id") or f"row-{index + 1}")
+        _resolve_lead_entities(record, lead_entity_catalog, report, rid)
         native_error = validate_linkml_profile(record, "RestorationProjectSubmission")
         if native_error: report.add("linkml", "ERROR", "native_linkml_validation", native_error, rid)
         for key in required:
@@ -110,7 +173,14 @@ def validate_records(records: list[dict[str, Any]], registry: ProjectIdRegistry,
             elif not construction and record.get(key) in (None, ""): report.add("business", "WARNING", "stage_requiredness", f"{key} is not yet supplied", rid)
         types = set(record.get("project_type") or [])
         exempt = types and types <= {"fish screen installation or improvement", "fish passage improvement"}
-        if not exempt and record.get("acreage") in (None, ""): report.add("business", "ERROR", "acreage_required", "acreage is required except for exclusively fish screen/passage work", rid)
+        if not exempt and record.get("acreage") in (None, ""):
+            severity = "ERROR" if construction else "WARNING"
+            message = (
+                "acreage is required at construction or post-construction for area-based project types"
+                if construction
+                else "acreage is not yet supplied for this early-stage area-based project"
+            )
+            report.add("business", severity, "acreage_required", message, rid)
         supplied_gap = record.get("funding_gap")
         if supplied_gap not in (None, ""):
             budget, secured = record.get("estimated_budget"), record.get("funding_secured")

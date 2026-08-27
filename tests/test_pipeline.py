@@ -12,7 +12,8 @@ from hrl_restoration_pipeline.publication import activate_local_snapshot, merge,
 from hrl_restoration_pipeline.registry import SnapshotRegistry
 from hrl_restoration_pipeline.reporting import write_reports
 from hrl_restoration_pipeline.transformation import as_feature_collection, canonicalize, publicize
-from hrl_restoration_pipeline.validation import MANIFEST_PATH, SCHEMA_PATH, candidate_profile_errors, validate_records
+from hrl_restoration_pipeline.validation import MANIFEST_PATH, SCHEMA_PATH, _resolve_lead_entities, candidate_profile_errors, validate_records
+from hrl_restoration_pipeline.models import Report
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -22,12 +23,12 @@ def record(**updates):
     value = {"project_id": " HRL-001 ", "project_name": "Test", "project_description": "Description", "project_stage": "design", "lead_entity": "dwr", "early_implementation": True, "system": "Delta", "project_type": "tidal habitat", "acreage": 1.5, "target_species": "Chinook salmon"}
     value.update(updates); return value
 
-def manifest(): return {"submission_id":"s1", "organization_code":"DWR", "data_as_of":"2026-08-20"}
+def manifest(): return {"submission_id":"s1", "organization_code":"DWR", "data_as_of":"2026-08-20", "data_steward_name":"Example Steward", "data_steward_email":"steward@example.org"}
 
 def test_snapshot_checksum_matches_manifest():
     manifest_data = json.loads(MANIFEST_PATH.read_text())
-    assert manifest_data["tag"] == "v1.2.0"
-    assert manifest_data["commit_sha"] == "f39ea9f068f3fa8db06792305487bb2ab00c2b92"
+    assert manifest_data["tag"] == "v1.3.1"
+    assert manifest_data["commit_sha"] == "fe5633a6a0e4dc240483bdfd2787909ff4fce7e3"
     expected = manifest_data["artifacts"][SCHEMA_PATH.name]
     assert hashlib.sha256(SCHEMA_PATH.read_bytes()).hexdigest() == expected
 
@@ -38,7 +39,24 @@ def test_valid_record_is_repaired_and_awaits_approval():
     assert report.repairs and report.warnings
     assert report.json()["registry"]["version"] == "2026-08-24-test"
 
-@pytest.mark.parametrize("change", [{"project_id":"MISSING"}, {"project_id":"HRL-RETIRED"}, {"project_type":"unknown"}, {"acreage":None}, {"project_name":""}])
+def test_nan_optional_values_are_normalized_to_missing():
+    values, report = validate_records([record(contractors=float("nan"), funding_sources=float("nan"))], registry(), manifest())
+    assert "contractors" not in values[0] and "funding_sources" not in values[0]
+    assert any(repair.rule == "nan_to_missing" for repair in report.repairs)
+
+def test_lead_entity_aliases_normalize_to_stable_ids():
+    report = Report("s1", {}, {}, "test", "2026-08-24T00:00:00Z")
+    value = {"lead_entity": ["YWA", "Yuba Water Agency", "River Partners"]}
+    catalog = {
+        "ywa": {"yuba_water_agency"},
+        "yuba water agency": {"yuba_water_agency"},
+        "river partners": {"river_partners"},
+    }
+    _resolve_lead_entities(value, catalog, report, "HRL-001")
+    assert value["lead_entity"] == ["yuba_water_agency", "river_partners"]
+    assert {repair.rule for repair in report.repairs} == {"lead_entity_catalog_match"}
+
+@pytest.mark.parametrize("change", [{"project_id":"MISSING"}, {"project_id":"HRL-RETIRED"}, {"project_type":"unknown"}, {"project_name":""}])
 def test_invalid_records_need_correction(change):
     _, report = validate_records([record(**change)], registry(), manifest())
     assert report.status == "NEEDS_CORRECTION"
@@ -47,8 +65,19 @@ def test_construction_fields_are_required():
     _, report = validate_records([record(project_stage="construction")], registry(), manifest())
     assert any(x.rule == "stage_requiredness" and x.severity == "ERROR" for x in report.findings)
 
+def test_early_stage_missing_acreage_is_a_warning():
+    _, report = validate_records([record(acreage=None)], registry(), manifest())
+    assert any(x.rule == "acreage_required" and x.severity == "WARNING" for x in report.findings)
+    assert not any(x.rule == "acreage_required" and x.severity == "ERROR" for x in report.findings)
+
+
+def test_construction_missing_acreage_is_an_error():
+    _, report = validate_records([record(project_stage="construction", acreage=None)], registry(), manifest())
+    assert any(x.rule == "acreage_required" and x.severity == "ERROR" for x in report.findings)
+
+
 def test_fish_passage_acreage_exception():
-    _, report = validate_records([record(project_type="fish passage improvement", acreage=None)], registry(), manifest())
+    _, report = validate_records([record(project_stage="construction", project_type="fish passage improvement", acreage=None)], registry(), manifest())
     assert not any(x.rule == "acreage_required" for x in report.findings)
 
 def test_spatial_errors_are_separate():
@@ -78,6 +107,7 @@ def test_candidate_profiles_conform_when_complete():
 
 def test_legacy_funding_gap_is_preserved_with_warning_when_not_calculable():
     normalized, report = validate_records([record(funding_gap=60)], registry(), manifest())
+    normalized[0]["geometry"] = {"type": "Point", "coordinates": [1, 2]}
     canonical = canonicalize(normalized, manifest())
     assert canonical[0]["funding_gap"] == 60
     assert any(x.rule == "funding_gap_passthrough" and x.severity == "WARNING" for x in report.findings)
@@ -96,15 +126,29 @@ def test_merge_keeps_absent_records_and_public_excludes_private_fields(tmp_path)
     with pytest.raises(FileExistsError): publish_local(public, root, "v1", {})
     assert (root / "current.json").read_text() == before
 
+def test_publicize_filters_non_active_canonical_records():
+    active = {**record(project_id="HRL-001"), "record_status": "active"}
+    retired = {**record(project_id="HRL-RETIRED"), "record_status": "retired"}
+    public = publicize([active, retired])
+    assert [value["project_id"] for value in public] == ["HRL-001"]
+
 def test_manifest_and_input_contract(tmp_path):
-    (tmp_path / "submission.json").write_text(json.dumps({"submission_id":"s", "organization":"DWR", "organization_code":"DWR", "dataset_name":"x", "submission_type":"update", "submission_scope":"partial_update", "data_as_of":"2026-08-20", "primary_file":"x.geojson"}))
+    manifest_data = {"submission_id":"s", "organization":"DWR", "organization_code":"DWR", "dataset_name":"x", "submission_type":"update", "submission_scope":"partial_update", "data_as_of":"2026-08-20", "data_steward_name":"Example Steward", "data_steward_email":"steward@example.org", "primary_file":"x.geojson"}
+    (tmp_path / "submission.json").write_text(json.dumps(manifest_data))
     (tmp_path / "x.geojson").write_text('{"type":"FeatureCollection","features":[]}')
     assert load_submission(tmp_path)[1].name == "x.geojson"
+    missing_steward = {key: value for key, value in manifest_data.items() if key != "data_steward_email"}
+    (tmp_path / "submission.json").write_text(json.dumps(missing_steward))
+    with pytest.raises(ValueError, match="data_steward_email"): load_submission(tmp_path)
+    invalid_email = {**manifest_data, "data_steward_email": "not-an-email"}
+    (tmp_path / "submission.json").write_text(json.dumps(invalid_email))
+    with pytest.raises(ValueError, match="email"): load_submission(tmp_path)
+    (tmp_path / "submission.json").write_text(json.dumps(manifest_data))
     (tmp_path / "another.gpkg").write_text("x")
     with pytest.raises(ValueError, match="exactly one"): load_submission(tmp_path)
 
 def test_rejects_corrupt_and_incomplete_shapefile_archives(tmp_path):
-    base = {"submission_id":"s", "organization":"DWR", "organization_code":"DWR", "dataset_name":"x", "submission_type":"update", "submission_scope":"partial_update", "data_as_of":"2026-08-20", "primary_file":"x.zip"}
+    base = {"submission_id":"s", "organization":"DWR", "organization_code":"DWR", "dataset_name":"x", "submission_type":"update", "submission_scope":"partial_update", "data_as_of":"2026-08-20", "data_steward_name":"Example Steward", "data_steward_email":"steward@example.org", "primary_file":"x.zip"}
     (tmp_path / "submission.json").write_text(json.dumps(base)); (tmp_path / "x.zip").write_text("not a zip")
     with pytest.raises(ValueError, match="corrupt"): load_submission(tmp_path)
     with zipfile.ZipFile(tmp_path / "x.zip", "w") as archive: archive.writestr("x.shp", "placeholder")
@@ -124,7 +168,7 @@ def test_each_supported_ingestion_format(tmp_path, suffix):
     from shapely.geometry import Point
     data = gpd.GeoDataFrame([{"project_id":"HRL-001"}], geometry=[Point(-121, 38)], crs="EPSG:4326")
     primary = "projects" + suffix
-    manifest_data = {"submission_id":"formats", "organization":"DWR", "organization_code":"DWR", "dataset_name":"x", "submission_type":"update", "submission_scope":"partial_update", "data_as_of":"2026-08-20", "primary_file":primary}
+    manifest_data = {"submission_id":"formats", "organization":"DWR", "organization_code":"DWR", "dataset_name":"x", "submission_type":"update", "submission_scope":"partial_update", "data_as_of":"2026-08-20", "data_steward_name":"Example Steward", "data_steward_email":"steward@example.org", "primary_file":primary}
     (tmp_path / "submission.json").write_text(json.dumps(manifest_data))
     if suffix == ".geojson": data.to_file(tmp_path / primary, driver="GeoJSON")
     elif suffix == ".gpkg": data.to_file(tmp_path / primary, driver="GPKG")
@@ -135,7 +179,7 @@ def test_each_supported_ingestion_format(tmp_path, suffix):
 
 
 def _cli_manifest(primary: str, submission_id: str = "cli-test") -> dict[str, str]:
-    return {"submission_id": submission_id, "organization": "DWR", "organization_code": "DWR", "dataset_name": "CLI fixture", "submission_type": "update", "submission_scope": "partial_update", "data_as_of": "2026-08-20", "primary_file": primary}
+    return {"submission_id": submission_id, "organization": "DWR", "organization_code": "DWR", "dataset_name": "CLI fixture", "submission_type": "update", "submission_scope": "partial_update", "data_as_of": "2026-08-20", "data_steward_name": "Example Steward", "data_steward_email": "steward@example.org", "primary_file": primary}
 
 
 def _cli_record(project_id: str = "HRL-001", **updates):
@@ -201,7 +245,7 @@ def test_cli_valid_submissions_write_all_acceptance_artifacts_without_mutating_s
     assert canonical.is_file() and public.is_file()
     candidate_manifest = json.loads((output / "candidate-manifest.json").read_text())
     assert candidate_manifest["status"] == "AWAITING_APPROVAL"
-    assert candidate_manifest["schema"]["version"] == "v1.2.0"
+    assert candidate_manifest["schema"]["version"] == "v1.3.1"
     assert candidate_manifest["artifacts"]["canonical-candidate.geojson"] == hashlib.sha256(canonical.read_bytes()).hexdigest()
     _assert_candidate_contract(canonical, "RestorationProjectCanonicalRecord")
     _assert_candidate_contract(public, "RestorationProjectPublicRecord")
@@ -243,7 +287,7 @@ def test_cli_invalid_cases_write_reports_and_do_not_publish_candidates(tmp_path,
     elif kind == "retired_id":
         _write_cli_submission(submission, ".geojson", _cli_record("HRL-RETIRED"))
     else:
-        _write_cli_submission(submission, ".geojson", _cli_record(funding_gap=None))
+        _write_cli_submission(submission, ".geojson", _cli_record(project_description=""))
     completed = _run_cli(submission, output)
     assert completed.returncode == 2, completed.stderr
     report = json.loads((output / "validation-report.json").read_text())
@@ -323,7 +367,10 @@ def test_cli_promotion_requires_explicit_matching_approval_and_upserts_local_mas
     metadata = json.loads((public_root / "v1" / "metadata.json").read_text())
     assert metadata["source_submission_id"] == "cli-test" and metadata["approved_at"] == approval["approved_at"]
     assert metadata["candidate_manifest_sha256"] == approval["candidate_manifest_sha256"]
-    assert json.loads((master.parent / "promotion-audits" / "v1.json").read_text())["submission_id"] == "cli-test"
+    audit = json.loads((master.parent / "promotion-audits" / "v1.json").read_text())
+    assert audit["submission_id"] == "cli-test"
+    assert audit["approved_by"] == approval["approved_by"]
+    assert audit["data_steward"]["email"] == "steward@example.org"
     after = {path.relative_to(candidate): hashlib.sha256(path.read_bytes()).hexdigest() for path in candidate.rglob("*") if path.is_file()}
     assert after == before
     (candidate / "public-candidate.geojson").write_text("tampered")

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-import json, zipfile
+import json, re, zipfile
 from datetime import date
 from pathlib import Path
 
-REQUIRED_MANIFEST = {"submission_id", "organization", "organization_code", "dataset_name", "submission_type", "submission_scope", "data_as_of", "primary_file"}
+REQUIRED_MANIFEST = {
+    "submission_id", "organization", "organization_code", "dataset_name",
+    "submission_type", "submission_scope", "data_as_of", "primary_file",
+    "data_steward_name", "data_steward_email",
+}
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MAX_ARCHIVE_MEMBERS = 1_000
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 1_000_000_000
 MAX_ARCHIVE_COMPRESSION_RATIO = 100
@@ -54,6 +59,8 @@ def load_submission(directory: Path) -> tuple[dict, Path]:
     if missing: raise ValueError(f"submission manifest missing: {', '.join(sorted(missing))}")
     if any(not isinstance(manifest[key], str) or not manifest[key].strip() for key in REQUIRED_MANIFEST):
         raise ValueError("submission manifest required fields must be nonempty strings")
+    if not EMAIL_PATTERN.fullmatch(manifest["data_steward_email"].strip()):
+        raise ValueError("data_steward_email must be a valid email address")
     try: date.fromisoformat(manifest["data_as_of"])
     except ValueError as exc: raise ValueError("data_as_of must be an ISO-8601 date") from exc
     if manifest["submission_type"] not in {"update", "correction"}: raise ValueError("invalid submission_type")
