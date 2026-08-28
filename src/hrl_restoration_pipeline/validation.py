@@ -118,6 +118,15 @@ def validate_linkml_profile(record: dict[str, Any], class_name: str) -> str | No
     return None
 
 
+def multivalued_slots(class_name: str) -> set[str]:
+    """Names of the multivalued slots on a profile, per the pinned schema."""
+    return {
+        slot.name
+        for slot in SchemaView(str(SCHEMA_PATH)).class_induced_slots(class_name)
+        if slot.multivalued
+    }
+
+
 def candidate_profile_errors(records: list[dict[str, Any]], class_name: str) -> list[tuple[str, str]]:
     """Validate generated candidate records against their distinct LinkML profile."""
     errors = []
