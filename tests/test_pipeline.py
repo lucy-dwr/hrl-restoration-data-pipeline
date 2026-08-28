@@ -350,6 +350,31 @@ def test_publication_writes_validated_artifacts_and_preserves_pointer_on_failure
     assert not (root / "v2").exists()
 
 
+def test_publication_handles_sparse_multivalue_fields_and_large_geometry(tmp_path):
+    import math
+
+    # Two things that only appear with real data and used to break the
+    # GeoPackage/CSV round-trip check in _validate_snapshot:
+    #   1. a multivalue field populated for some records but not all -> the
+    #      GeoPackage reads the empty ones back as NaN, which LinkML rejected;
+    #   2. a real project footprint whose GeoJSON string exceeds the default
+    #      csv field-size limit.
+    n = 4000
+    ring = [[math.cos(t / n * 2 * math.pi) * 100.0, math.sin(t / n * 2 * math.pi) * 100.0] for t in range(n)]
+    ring.append(ring[0])
+    footprint = {"type": "Polygon", "coordinates": [ring]}
+    assert len(json.dumps(footprint)) > 131072
+    normalized = {"project_stage": ["design"], "lead_entity": ["dwr"], "project_type": ["tidal habitat"], "target_species": ["Chinook salmon"]}
+    public = publicize(canonicalize([
+        _cli_record("HRL-001", geometry=footprint, funding_sources=["WCB grant", "USBR grant"], **normalized),
+        _cli_record("HRL-002", geometry=footprint, **normalized),
+    ], manifest()))
+    target = publish_local(public, tmp_path / "exports", "2026-08-28", {"schema_version": "v1.3.1"})
+    assert {path.name for path in target.iterdir()} == {"projects.geojson", "projects.gpkg", "projects.csv", "metadata.json"}
+    rows = list(__import__("csv").DictReader((target / "projects.csv").open()))
+    assert [row["project_id"] for row in rows] == ["HRL-001", "HRL-002"]
+
+
 def test_publication_conditional_pointer_preserves_competing_current_version(tmp_path):
     normalized = {"project_stage": ["design"], "lead_entity": ["dwr"], "project_type": ["tidal habitat"], "target_species": ["Chinook salmon"]}
     public = publicize(canonicalize([_cli_record("HRL-001", geometry={"type": "Point", "coordinates": [100, 200]}, **normalized)], manifest()))

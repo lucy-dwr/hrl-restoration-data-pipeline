@@ -11,6 +11,11 @@ from . import __version__
 from .transformation import as_feature_collection
 from .validation import candidate_profile_errors, schema_provenance
 
+# `projects.csv` carries each record's geometry as a GeoJSON string. A real
+# project footprint serializes to well over the 128 KiB default cell limit, so
+# raise it for this module's reads.
+csv.field_size_limit(64 * 1024 * 1024)
+
 
 _UNSET = object()
 
@@ -66,7 +71,14 @@ def _validate_snapshot(records: list[dict[str, Any]], directory: Path) -> None:
         else:
             produced = []
             for properties, geometry in zip(frame.drop(columns="geometry").to_dict("records"), frame.geometry):
-                restored = {key: json.loads(value) if isinstance(value, str) and value.startswith("[") else value for key, value in properties.items()}
+                # A GeoPackage column that is unset for a row reads back as a
+                # float NaN. That is an absent field, not a value; drop it so it
+                # is validated the same way the GeoJSON branch sees a missing key.
+                restored = {
+                    key: json.loads(value) if isinstance(value, str) and value.startswith("[") else value
+                    for key, value in properties.items()
+                    if not (isinstance(value, float) and value != value)
+                }
                 produced.append({**restored, "geometry": geometry.__geo_interface__})
         if [record["project_id"] for record in produced] != expected_ids:
             raise ValueError(f"{name} project ordering differs from the snapshot")
