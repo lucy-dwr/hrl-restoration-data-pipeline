@@ -354,28 +354,28 @@ def test_cli_promotion_requires_explicit_matching_approval_and_upserts_local_mas
     old = canonicalize([_cli_record("HRL-OLD", project_name="Kept because absent", geometry={"type": "Point", "coordinates": [50, 50]}, **normalized)], manifest())
     master.parent.mkdir()
     master.write_text(json.dumps(as_feature_collection(old), indent=2, sort_keys=True))
-    assert _run_promote(candidate, master, public_root, "v1").returncode == 2
+    assert _run_promote(candidate, master, public_root, "2026-08-24").returncode == 2
     assert not (public_root / "current.json").exists()
-    approval = {"submission_id": "cli-test", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
+    approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval, sort_keys=True))
     before = {path.relative_to(candidate): hashlib.sha256(path.read_bytes()).hexdigest() for path in candidate.rglob("*") if path.is_file()}
-    completed = _run_promote(candidate, master, public_root, "v1")
+    completed = _run_promote(candidate, master, public_root, "2026-08-24")
     assert completed.returncode == 0, completed.stderr
     master_records = json.loads(master.read_text())["features"]
     assert [feature["properties"]["project_id"] for feature in master_records] == ["HRL-001", "HRL-OLD"]
-    assert json.loads((public_root / "current.json").read_text())["snapshot_version"] == "v1"
-    metadata = json.loads((public_root / "v1" / "metadata.json").read_text())
+    assert json.loads((public_root / "current.json").read_text())["snapshot_version"] == "2026-08-24"
+    metadata = json.loads((public_root / "2026-08-24" / "metadata.json").read_text())
     assert metadata["source_submission_id"] == "cli-test" and metadata["approved_at"] == approval["approved_at"]
     assert metadata["candidate_manifest_sha256"] == approval["candidate_manifest_sha256"]
-    audit = json.loads((master.parent / "promotion-audits" / "v1.json").read_text())
+    audit = json.loads((master.parent / "promotion-audits" / "2026-08-24.json").read_text())
     assert audit["submission_id"] == "cli-test"
     assert audit["approved_by"] == approval["approved_by"]
     assert audit["data_steward"]["email"] == "steward@example.org"
     after = {path.relative_to(candidate): hashlib.sha256(path.read_bytes()).hexdigest() for path in candidate.rglob("*") if path.is_file()}
     assert after == before
     (candidate / "public-candidate.geojson").write_text("tampered")
-    assert _run_promote(candidate, master, public_root, "v2").returncode == 2
-    assert not (public_root / "v2").exists()
+    assert _run_promote(candidate, master, public_root, "2026-08-24-r2").returncode == 2
+    assert not (public_root / "2026-08-24-r2").exists()
 
 
 def test_cli_promotion_rejects_repeated_candidate_and_preserves_current_pointer(tmp_path):
@@ -383,18 +383,18 @@ def test_cli_promotion_rejects_repeated_candidate_and_preserves_current_pointer(
     _write_cli_submission(submission, ".geojson")
     candidate = tmp_path / "candidate"
     assert _run_cli(submission, candidate).returncode == 0
-    approval = {"submission_id": "cli-test", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
+    approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval))
     master = tmp_path / "standardized" / "canonical-master.geojson"; public_root = tmp_path / "public"
-    assert _run_promote(candidate, master, public_root, "v1").returncode == 0
+    assert _run_promote(candidate, master, public_root, "2026-08-24").returncode == 0
     pointer_before = (public_root / "current.json").read_text()
     master_before = master.read_text()
-    repeated = _run_promote(candidate, master, public_root, "v2")
+    repeated = _run_promote(candidate, master, public_root, "2026-08-24-r2")
     assert repeated.returncode == 2
-    assert "already been promoted" in repeated.stderr
+    assert "publication_version does not match requested promotion version" in repeated.stderr
     assert (public_root / "current.json").read_text() == pointer_before
     assert master.read_text() == master_before
-    assert not (public_root / "v2").exists()
+    assert not (public_root / "2026-08-24-r2").exists()
 
 
 def test_cli_promotion_requires_complete_checksum_manifest(tmp_path):
@@ -405,9 +405,9 @@ def test_cli_promotion_requires_complete_checksum_manifest(tmp_path):
     candidate_manifest = json.loads((candidate / "candidate-manifest.json").read_text())
     del candidate_manifest["artifacts"]["public-candidate.geojson"]
     (candidate / "candidate-manifest.json").write_text(json.dumps(candidate_manifest, sort_keys=True))
-    approval = {"submission_id": "cli-test", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
+    approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval))
-    completed = _run_promote(candidate, tmp_path / "master.geojson", tmp_path / "public", "v1")
+    completed = _run_promote(candidate, tmp_path / "master.geojson", tmp_path / "public", "2026-08-24")
     assert completed.returncode == 2
     assert "candidate-manifest.json is incomplete" in completed.stderr
     assert not (tmp_path / "public" / "current.json").exists()
@@ -423,21 +423,21 @@ def test_cli_promotion_rejects_mismatched_approval_without_changing_current_poin
     candidate = tmp_path / "candidate"
     assert _run_cli(submission, candidate).returncode == 0
     master = tmp_path / "standardized" / "canonical-master.geojson"; public_root = tmp_path / "public"
-    approval = {"submission_id": "cli-test", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
+    approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval))
-    assert _run_promote(candidate, master, public_root, "v1").returncode == 0
+    assert _run_promote(candidate, master, public_root, "2026-08-24").returncode == 0
     pointer_before = (public_root / "current.json").read_text()
     (candidate / "_APPROVE").write_text(json.dumps(change(approval)))
-    failed = _run_promote(candidate, master, public_root, "v2")
+    failed = _run_promote(candidate, master, public_root, "2026-08-24-r2")
     assert failed.returncode == 2
     assert (public_root / "current.json").read_text() == pointer_before
-    assert not (public_root / "v2").exists()
+    assert not (public_root / "2026-08-24-r2").exists()
 
 
-@pytest.mark.parametrize("approval", ["not json", json.dumps({"submission_id": "other", "approved_by": "reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": "x"}), json.dumps({"submission_id": "cli-test", "approved_by": "reviewer", "approved_at": "not-a-date", "candidate_manifest_sha256": "x"})])
+@pytest.mark.parametrize("approval", ["not json", json.dumps({"submission_id": "other", "publication_version": "2026-08-24", "approved_by": "reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": "x"}), json.dumps({"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "reviewer", "approved_at": "not-a-date", "candidate_manifest_sha256": "x"})])
 def test_cli_promotion_rejects_invalid_approval_markers_without_writing(tmp_path, approval):
     candidate = tmp_path / "candidate"; candidate.mkdir()
     (candidate / "_APPROVE").write_text(approval)
-    completed = _run_promote(candidate, tmp_path / "master.geojson", tmp_path / "public", "v1")
+    completed = _run_promote(candidate, tmp_path / "master.geojson", tmp_path / "public", "2026-08-24")
     assert completed.returncode == 2
     assert not (tmp_path / "master.geojson").exists() and not (tmp_path / "public" / "current.json").exists()

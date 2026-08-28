@@ -22,7 +22,9 @@ unacknowledged for Storage Queue retry/dead-letter handling. The stdin and
 All locations and credentials are runtime configuration. Use either
 `HRL_STORAGE_CONNECTION_STRING` for local development or
 `HRL_STORAGE_ACCOUNT_URL` with managed identity in Azure; do not put either in
-Git. The registry snapshot and its manifest are mounted/provided as arguments.
+Git. Local development may pass a mounted registry snapshot and manifest as
+paths. Azure uses the validation identity to stage a specifically named
+immutable export from Blob Storage; it never follows `current.json`.
 
 ```bash
 hrl-validation-worker \
@@ -32,6 +34,18 @@ hrl-validation-worker \
   --candidates-container private-data \
   --registry /run/registry/registry.json \
   --registry-manifest /run/registry/manifest.json
+```
+
+Azure runtime example:
+
+```bash
+hrl-validation-worker \
+  --queue validation-requests \
+  --raw-container raw-submissions --raw-prefix '' \
+  --reports-container validation-reports \
+  --candidates-container publication-candidates \
+  --registry-container registry-exports \
+  --registry-prefix project-id-registry/2026-08-24/
 ```
 
 The event subject must agree with `data.url`. Source paths and SHA-256 checksums
@@ -52,6 +66,37 @@ ratios, oversized extracted payloads, and incomplete shapefile packages.
 container. When `raw-submissions` is itself a dedicated container, pass
 `--raw-prefix ''`; then the marker is directly
 `<organization>/<submission-id>/_READY` inside that container.
+
+## Queue-triggered promotion worker
+
+`hrl-promotion-worker` is a separate Azure-facing entry point. It accepts only
+one Event Grid `BlobCreated` event for
+`publication-candidates/restoration-projects/<submission-id>/_APPROVE` and
+re-reads the marker and all candidate artifacts before publishing. It verifies
+the approval's submission ID, publication version, and candidate-manifest
+SHA-256 through the deterministic promotion contract.
+
+It writes create-only artifacts to these paths:
+
+```text
+standardized/restoration-projects/canonical-master.geojson
+standardized/restoration-projects/promotion-audits/<publication-version>.json
+public-exports/restoration-projects/<publication-version>/
+public-exports/restoration-projects/current.json
+```
+
+The immutable public artifacts and audit tolerate only byte-identical retries.
+The canonical master and `current.json` use optimistic ETag conditions; a
+competing update leaves the known-good pointer unchanged and the queue message
+unacknowledged for investigation/retry. Run it in Azure with managed identity:
+
+```bash
+hrl-promotion-worker \
+  --queue promotion-requests \
+  --candidates-container publication-candidates \
+  --standardized-container standardized \
+  --public-container public-exports
+```
 
 ```bash
 python -m pip install -e '.[test]'
@@ -104,9 +149,13 @@ The importer resolves the release tag to its annotated commit, downloads the rel
 
 Validation never publishes data. An authorized reviewer must place a reviewed `_APPROVE` JSON marker in the candidate directory before local promotion:
 
+Start with [templates/approval-template.json](templates/approval-template.json). Use
+`YYYY-MM-DD-r2`, `-r3`, and so on for same-day correction releases.
+
 ```json
 {
   "submission_id":"example-001",
+  "publication_version":"2026-08-24",
   "approved_by":"local-reviewer",
   "approved_at":"2026-08-24T20:00:00Z",
   "candidate_manifest_sha256":"<SHA-256 of candidate-manifest.json>"
@@ -142,11 +191,11 @@ Build the runtime image:
 docker build --target runtime --tag hrl-restoration-data-pipeline:local .
 ```
 
-The runtime entry point is `hrl-validation-worker`; pass the queue body on
-standard input (or use `--message-file`) and provide its storage/runtime
-arguments. `hrl-pipeline` remains the local deterministic validator, while the
-existing local-only `promote` command is not part of this worker or container
-entrypoint. For example, with suitable local paths mounted:
+The runtime image defaults to `hrl-validation-worker`; a Container Apps Job
+must explicitly set `hrl-promotion-worker` as its command for promotion. Pass
+the queue body on standard input (or use `--message-file`) and provide its
+storage/runtime arguments. `hrl-pipeline` remains the local deterministic
+validator. For example, with suitable local paths mounted:
 
 ```bash
 docker run --rm -i hrl-restoration-data-pipeline:local \

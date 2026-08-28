@@ -1,0 +1,7 @@
+{
+  "submission_id": "<submission ID>",
+  "publication_version": "YYYY-MM-DD",
+  "approved_by": "<reviewer name or email>",
+  "approved_at": "YYYY-MM-DDTHH:MM:SSZ",
+  "candidate_manifest_sha256": "<SHA-256 from candidate-manifest.json>"
+}

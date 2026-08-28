@@ -71,7 +71,7 @@ def _promote_main(argv: list[str]) -> int:
     parser.add_argument("candidate", type=Path, help="AWAITING_APPROVAL candidate directory containing _APPROVE")
     parser.add_argument("--master", type=Path, required=True, help="local canonical-master.geojson path")
     parser.add_argument("--public-root", type=Path, required=True, help="local immutable public snapshot root")
-    parser.add_argument("--version", required=True, help="new immutable public snapshot version")
+    parser.add_argument("--version", required=True, help="must match _APPROVE publication_version")
     args = parser.parse_args(argv)
     try:
         promote_local(args.candidate, args.master, args.public_root, args.version)

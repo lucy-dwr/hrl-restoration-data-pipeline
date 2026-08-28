@@ -24,6 +24,7 @@ from .validation import candidate_profile_errors, read_spatial, validate_records
 
 
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_REGISTRY_PREFIX = re.compile(r"^project-id-registry/\d{4}-\d{2}-\d{2}(?:-r[2-9]\d*)?/$")
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,25 @@ class AzureBlobStore:
             self.client.get_blob_client(container, name).upload_blob(content, overwrite=False)
             return True
         except ResourceExistsError:
+            return False
+
+    def download_with_etag(self, container: str, name: str) -> tuple[bytes, str | None]:
+        blob = self.client.get_blob_client(container, name)
+        if not blob.exists():
+            return b"", None
+        return blob.download_blob().readall(), str(blob.get_blob_properties().etag)
+
+    def upload_if_match(self, container: str, name: str, content: bytes, etag: str | None) -> bool:
+        from azure.core.exceptions import ResourceExistsError, ResourceModifiedError
+
+        try:
+            blob = self.client.get_blob_client(container, name)
+            if etag is None:
+                blob.upload_blob(content, overwrite=False)
+            else:
+                blob.upload_blob(content, overwrite=True, if_match=etag)
+            return True
+        except (ResourceExistsError, ResourceModifiedError):
             return False
 
 
@@ -136,12 +156,58 @@ def _put_tree(store: BlobStore, container: str, prefix: str, directory: Path, na
         store.upload_if_absent(container, f"{prefix}/{name}", (directory / name).read_bytes())
 
 
-def _write_candidate_manifest(directory: Path, report: Report) -> None:
+def stage_registry_export(store: BlobStore, container: str, prefix: str, directory: Path) -> tuple[Path, Path]:
+    """Stage one named immutable registry export and its manifest locally.
+
+    The worker never follows the mutable registry ``current.json`` pointer. The
+    manifest selects and checksum-protects the CSV or JSON export supplied to
+    ``SnapshotRegistry``.
+    """
+    normalized_prefix = prefix.strip("/") + "/"
+    if not _REGISTRY_PREFIX.fullmatch(normalized_prefix):
+        raise ValueError("registry prefix must be project-id-registry/YYYY-MM-DD[-rN]/")
+    manifest_name = f"{normalized_prefix}manifest.json"
+    if not store.exists(container, manifest_name):
+        raise ValueError("immutable registry manifest is missing")
+    manifest_content = store.download(container, manifest_name)
+    try:
+        manifest = json.loads(manifest_content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("immutable registry manifest must contain JSON") from exc
+    checksums = manifest.get("checksums") if isinstance(manifest, dict) else None
+    if not isinstance(checksums, dict):
+        raise ValueError("immutable registry manifest lacks checksums")
+    candidates = [name for name, digest in checksums.items() if isinstance(name, str) and isinstance(digest, str) and "/" not in name and name.endswith((".json", ".csv"))]
+    preferred = "project-id-registry.json"
+    export_name = preferred if preferred in candidates else candidates[0] if len(candidates) == 1 else None
+    if export_name is None:
+        raise ValueError("immutable registry manifest must identify exactly one supported export")
+    export_blob_name = f"{normalized_prefix}{export_name}"
+    if not store.exists(container, export_blob_name):
+        raise ValueError("immutable registry export is missing")
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest_path = directory / "manifest.json"
+    export_path = directory / export_name
+    manifest_path.write_bytes(manifest_content)
+    export_path.write_bytes(store.download(container, export_blob_name))
+    return export_path, manifest_path
+
+
+def _write_candidate_manifest(directory: Path, report: Report, submission_manifest: dict[str, object]) -> None:
     names = ["canonical-candidate.geojson", "public-candidate.geojson", "validation-report.json", "validation-report.html", "validation-report.pdf", "status.json"]
-    payload = {"submission_id": report.submission_id, "status": report.status,
-               "pipeline_version": report.pipeline_version, "schema": report.schema,
-               "registry": report.registry,
-               "artifacts": {name: _sha256((directory / name).read_bytes()) for name in names}}
+    payload = {
+        "submission_id": report.submission_id,
+        "status": report.status,
+        "pipeline_version": report.pipeline_version,
+        "schema": report.schema,
+        "registry": report.registry,
+        "submission_data_steward": {
+            "name": submission_manifest["data_steward_name"],
+            "email": submission_manifest["data_steward_email"],
+        },
+        "ingested_by": os.environ.get("HRL_INGESTION_ACTOR", "hrl-restoration-pipeline"),
+        "artifacts": {name: _sha256((directory / name).read_bytes()) for name in names},
+    }
     (directory / "candidate-manifest.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -233,7 +299,7 @@ class ValidationWorker:
             (output / "canonical-candidate.geojson").write_text(json.dumps(as_feature_collection(canonical), indent=2, sort_keys=True))
             (output / "public-candidate.geojson").write_text(json.dumps(as_feature_collection(public), indent=2, sort_keys=True))
             (output / "status.json").write_text(json.dumps(report.json(), indent=2, sort_keys=True))
-            _write_candidate_manifest(output, report)
+            _write_candidate_manifest(output, report, manifest)
             _put_tree(self.store, self.candidates_container, candidate_prefix, output, ["canonical-candidate.geojson", "public-candidate.geojson", "validation-report.json", "validation-report.html", "validation-report.pdf", "candidate-manifest.json"])
             self.store.upload_if_absent(self.candidates_container, f"{candidate_prefix}/status.json", (output / "status.json").read_bytes())
             return report.status
@@ -246,7 +312,11 @@ def main(argv: list[str] | None = None) -> int:
     input_mode.add_argument("--queue", help="receive and acknowledge one Storage Queue message")
     parser.add_argument("--raw-container", required=True); parser.add_argument("--reports-container", required=True); parser.add_argument("--candidates-container", required=True)
     parser.add_argument("--raw-prefix", default="raw-submissions"); parser.add_argument("--reports-prefix", default="restoration-projects"); parser.add_argument("--candidates-prefix", default="restoration-projects")
-    parser.add_argument("--registry", type=Path, required=True); parser.add_argument("--registry-manifest", type=Path, required=True)
+    registry_input = parser.add_mutually_exclusive_group(required=True)
+    registry_input.add_argument("--registry", type=Path, help="local immutable registry export for development or a mounted volume")
+    registry_input.add_argument("--registry-container", help="Blob container holding an immutable registry export for managed-identity runtime")
+    parser.add_argument("--registry-manifest", type=Path, help="local manifest; required with --registry")
+    parser.add_argument("--registry-prefix", help="immutable registry path project-id-registry/YYYY-MM-DD[-rN]/; required with --registry-container")
     parser.add_argument("--connection-string", default=os.getenv("HRL_STORAGE_CONNECTION_STRING")); parser.add_argument("--account-url", default=os.getenv("HRL_STORAGE_ACCOUNT_URL"))
     args = parser.parse_args(argv)
     queue = AzureQueue(args.queue, args.connection_string, args.account_url) if args.queue else None
@@ -256,9 +326,21 @@ def main(argv: list[str] | None = None) -> int:
         if queue:
             return 0
         parser.error("provide --message-file, --queue, or a queue message on stdin")
-    worker = ValidationWorker(AzureBlobStore(args.connection_string, args.account_url), raw_container=args.raw_container, reports_container=args.reports_container, candidates_container=args.candidates_container, raw_prefix=args.raw_prefix, reports_prefix=args.reports_prefix, candidates_prefix=args.candidates_prefix, registry_path=args.registry, registry_manifest_path=args.registry_manifest)
+    if args.registry and not args.registry_manifest:
+        parser.error("--registry-manifest is required with --registry")
+    if args.registry_container and not args.registry_prefix:
+        parser.error("--registry-prefix is required with --registry-container")
+    store = AzureBlobStore(args.connection_string, args.account_url)
     try:
-        print(worker.process(message))
+        if args.registry:
+            worker = ValidationWorker(store, raw_container=args.raw_container, reports_container=args.reports_container, candidates_container=args.candidates_container, raw_prefix=args.raw_prefix, reports_prefix=args.reports_prefix, candidates_prefix=args.candidates_prefix, registry_path=args.registry, registry_manifest_path=args.registry_manifest)
+            result = worker.process(message)
+        else:
+            with tempfile.TemporaryDirectory(prefix="hrl-registry-export-") as temporary:
+                registry_path, manifest_path = stage_registry_export(store, args.registry_container, args.registry_prefix, Path(temporary))
+                worker = ValidationWorker(store, raw_container=args.raw_container, reports_container=args.reports_container, candidates_container=args.candidates_container, raw_prefix=args.raw_prefix, reports_prefix=args.reports_prefix, candidates_prefix=args.candidates_prefix, registry_path=registry_path, registry_manifest_path=manifest_path)
+                result = worker.process(message)
+        print(result)
         if queue:
             queue.acknowledge(queued_message)
     except ValueError as exc:

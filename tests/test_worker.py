@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from hrl_restoration_pipeline.ingestion import load_submission
-from hrl_restoration_pipeline.worker import ValidationWorker, parse_ready_event
+from hrl_restoration_pipeline.worker import ValidationWorker, parse_ready_event, stage_registry_export
 
 
 class MemoryBlobStore:
@@ -71,6 +71,20 @@ def _worker(store, tmp_path):
     registry_manifest = tmp_path / "registry-manifest.json"
     registry_manifest.write_text(json.dumps({"source_registry": "test", "export_version": "v1", "checksums": {"registry.json": __import__("hashlib").sha256(registry.read_bytes()).hexdigest()}}))
     return ValidationWorker(store, raw_container="private", reports_container="private", candidates_container="private", raw_prefix="raw-submissions", reports_prefix="validation-reports/restoration-projects", candidates_prefix="publication-candidates/restoration-projects", registry_path=registry, registry_manifest_path=registry_manifest)
+
+
+def test_stages_only_one_named_immutable_registry_export(tmp_path):
+    store = MemoryBlobStore()
+    export = b'[{"project_id":"HRL-001","status":"eligible"}]'
+    manifest = json.dumps({"source_registry": "test", "export_version": "2026-08-24", "checksums": {"project-id-registry.json": __import__("hashlib").sha256(export).hexdigest()}}).encode()
+    prefix = "project-id-registry/2026-08-24/"
+    store.blobs[("registry-exports", prefix + "manifest.json")] = manifest
+    store.blobs[("registry-exports", prefix + "project-id-registry.json")] = export
+    registry_path, manifest_path = stage_registry_export(store, "registry-exports", prefix, tmp_path / "registry")
+    assert registry_path.read_bytes() == export
+    assert json.loads(manifest_path.read_text())["export_version"] == "2026-08-24"
+    with pytest.raises(ValueError, match="registry prefix"):
+        stage_registry_export(store, "registry-exports", "project-id-registry/current.json", tmp_path / "bad")
 
 
 def test_missing_manifest_writes_private_correction_report_and_is_idempotent(tmp_path):

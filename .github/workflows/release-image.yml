@@ -1,4 +1,4 @@
-name: Release validation-worker image
+name: Release restoration-worker image
 
 on:
   push:

@@ -13,6 +13,29 @@ SHA256_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 RELEASE_TAG = re.compile(r"v[0-9][0-9A-Za-z._-]*\Z")
 
+WORKER_RUNTIME_CONTRACT = {
+    "validation": {
+        "command": ["hrl-validation-worker"],
+        "arguments": [
+            "--queue", "validation-requests",
+            "--raw-container", "raw-submissions", "--raw-prefix", "",
+            "--reports-container", "validation-reports",
+            "--candidates-container", "publication-candidates",
+            "--registry-container", "registry-exports",
+            "--registry-prefix", "project-id-registry/<immutable-version>/",
+        ],
+    },
+    "promotion": {
+        "command": ["hrl-promotion-worker"],
+        "arguments": [
+            "--queue", "promotion-requests",
+            "--candidates-container", "publication-candidates",
+            "--standardized-container", "standardized",
+            "--public-container", "public-exports",
+        ],
+    },
+}
+
 
 def image_release(
     *,
@@ -47,6 +70,7 @@ def image_release(
         "release_tag": release_tag,
         "package_version": package_version,
         "created_at": created_at,
+        "worker_runtime_contract": WORKER_RUNTIME_CONTRACT,
     }
 
 

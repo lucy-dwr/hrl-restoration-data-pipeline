@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import hashlib
-from datetime import datetime
+import re
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -87,9 +88,17 @@ def _approval(candidate_directory: Path) -> dict[str, str]:
         raise ValueError(f"{APPROVAL_MARKER} marker is required before promotion") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"{APPROVAL_MARKER} must contain JSON") from exc
-    required = {"submission_id", "approved_by", "approved_at", "candidate_manifest_sha256"}
+    required = {"submission_id", "publication_version", "approved_by", "approved_at", "candidate_manifest_sha256"}
     if not isinstance(approval, dict) or any(not isinstance(approval.get(key), str) or not approval[key].strip() for key in required):
-        raise ValueError(f"{APPROVAL_MARKER} requires nonempty submission_id, approved_by, approved_at, and candidate_manifest_sha256")
+        raise ValueError(f"{APPROVAL_MARKER} requires nonempty submission_id, publication_version, approved_by, approved_at, and candidate_manifest_sha256")
+    version = approval["publication_version"]
+    match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})(?:-r([2-9]\d*))?", version)
+    if not match:
+        raise ValueError(f"{APPROVAL_MARKER} publication_version must be YYYY-MM-DD or YYYY-MM-DD-rN (N >= 2)")
+    try:
+        date.fromisoformat(match.group(1))
+    except ValueError as exc:
+        raise ValueError(f"{APPROVAL_MARKER} publication_version must contain a valid ISO date") from exc
     try:
         datetime.fromisoformat(approval["approved_at"].replace("Z", "+00:00"))
     except ValueError as exc:
@@ -118,6 +127,8 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
     changes project IDs.
     """
     approval = _approval(candidate_directory)
+    if approval["publication_version"] != version:
+        raise ValueError("approval marker publication_version does not match requested promotion version")
     manifest, manifest_checksum = _candidate_manifest(candidate_directory)
     if approval["candidate_manifest_sha256"] != manifest_checksum:
         raise ValueError("approval marker does not match the current candidate manifest")

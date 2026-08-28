@@ -1,6 +1,6 @@
-# Validation-worker image release handoff
+# Restoration-worker image release handoff
 
-This repository owns the validation worker source, Dockerfile, image test,
+This repository owns the validation and promotion worker source, Dockerfile, image test,
 and evidence that a released image resolves to one immutable digest. It does
 not own ACR, Azure Container Apps Jobs, their Terraform, or their runtime
 identity permissions.
@@ -18,7 +18,7 @@ team must configure it before the release workflow is usable:
 | GitHub environment | `production-image-release`, with required reviewers and release tag protection. |
 | GitHub configuration | `AZURE_CREDENTIALS` Environment secret plus non-secret `ACR_NAME` and `ACR_LOGIN_SERVER` Environment variables. |
 
-The existing runtime validation identity remains `AcrPull` only. The publisher
+The existing runtime validation and promotion identities remain `AcrPull` only. The publisher
 must receive no Terraform, Container Apps Job, storage, queue, or
 subscription-level Contributor permission.
 
@@ -48,12 +48,20 @@ example:
 A tag is release provenance only. Terraform must use `image_ref`, never the
 tag used to create it.
 
+The handoff also records the reviewed `worker_runtime_contract`: the exact
+command and arguments for validation and promotion. The validation registry
+prefix intentionally uses `<immutable-version>`; before Terraform is enabled,
+an operator replaces it with the reviewed registry revision and records the
+same value in Terraform's `restoration_registry_export_path`. No worker may
+use `current.json` as registry input.
+
 ## Terraform handoff
 
 An operator opens a reviewable change in `hrl-azure-infrastructure` that:
 
 1. compares the proposed digest and source commit to `image-release.json`;
-2. updates only the relevant job's digest-pinned image reference; and
+2. updates only the relevant job's digest-pinned image reference, command, and
+   arguments; and
 3. applies through that repository's normal reviewed deployment process.
 
 The workflow has read-only repository permission. It cannot write repository

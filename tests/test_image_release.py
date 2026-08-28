@@ -33,6 +33,7 @@ def test_image_release_writes_digest_pinned_reference():
         "release_tag": "v0.2.0",
         "package_version": "0.2.0",
         "created_at": "2026-08-24T12:00:00Z",
+        "worker_runtime_contract": MODULE.WORKER_RUNTIME_CONTRACT,
     }
 
 
