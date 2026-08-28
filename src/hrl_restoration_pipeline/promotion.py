@@ -21,7 +21,6 @@ CANDIDATE_ARTIFACTS = {
     "status.json",
     "validation-report.json",
     "validation-report.html",
-    "validation-report.pdf",
 }
 
 

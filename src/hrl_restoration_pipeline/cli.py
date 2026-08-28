@@ -2,10 +2,12 @@ from __future__ import annotations
 import argparse, hashlib, json, os
 from pathlib import Path
 from .ingestion import load_submission
-from .registry import SnapshotRegistry
+from .registry import CsvRegistry
 from .reporting import write_reports
 from .transformation import as_feature_collection, canonicalize, publicize
 from .validation import candidate_profile_errors, read_spatial, validate_records
+
+CANDIDATE_REPORT_ARTIFACTS = ("validation-report.json", "validation-report.html")
 
 
 def _sha256(path: Path) -> str:
@@ -13,10 +15,8 @@ def _sha256(path: Path) -> str:
 
 
 def _write_candidate_manifest(directory: Path, report, submission_manifest: dict) -> None:
-    artifacts = {name: _sha256(directory / name) for name in (
-        "canonical-candidate.geojson", "public-candidate.geojson", "status.json",
-        "validation-report.json", "validation-report.html", "validation-report.pdf",
-    )}
+    names = ("canonical-candidate.geojson", "public-candidate.geojson", "status.json", *CANDIDATE_REPORT_ARTIFACTS)
+    artifacts = {name: _sha256(directory / name) for name in names}
     payload = {
         "submission_id": report.submission_id,
         "status": report.status,
@@ -34,13 +34,16 @@ def _write_candidate_manifest(directory: Path, report, submission_manifest: dict
 
 def _validate_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hrl-pipeline")
-    parser.add_argument("submission", type=Path); parser.add_argument("--registry", type=Path, required=True)
-    parser.add_argument("--registry-manifest", type=Path, required=True); parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("submission", type=Path)
+    parser.add_argument("--registry", type=Path, required=True, help="project-id-registry.csv checked out at a known commit")
+    parser.add_argument("--registry-ref", default=None, help="commit or tag the registry CSV is pinned to, recorded in the report")
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--pdf", action="store_true", help="also write a PDF companion report (needs the 'pdf' extra)")
     args = parser.parse_args(argv)
     try:
         manifest, source = load_submission(args.submission)
         records, spatial = read_spatial(source)
-        normalized, report = validate_records(records, SnapshotRegistry(args.registry, args.registry_manifest), manifest, spatial)
+        normalized, report = validate_records(records, CsvRegistry(args.registry, args.registry_ref), manifest, spatial)
     except (ValueError, OSError) as exc:
         from .models import Report
         report = Report(None, {}, {}, "0.2.0", "unavailable"); report.add("package", "ERROR", "package_validation", str(exc)); normalized = []; manifest = {}
@@ -58,7 +61,7 @@ def _validate_main(argv: list[str] | None = None) -> int:
             args.output.joinpath("public-candidate.geojson").write_text(json.dumps(as_feature_collection(public), indent=2, sort_keys=True))
             args.output.joinpath("status.json").write_text(json.dumps({"submission_id": manifest["submission_id"], "status": report.status, "warning_count": len(report.warnings), "pipeline_version": report.pipeline_version, "schema": report.schema, "registry": report.registry}, indent=2, sort_keys=True))
             candidate_ready = True
-    write_reports(report, args.output)
+    write_reports(report, args.output, pdf=args.pdf)
     if candidate_ready:
         _write_candidate_manifest(args.output, report, manifest)
     return 0 if not report.errors else 2

@@ -4,14 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "hrl-restoration-data-pipeline"
-version = "0.2.0"
-description = "Deterministic local HRL restoration submission pipeline"
+version = "0.3.0"
+description = "Deterministic local HRL restoration submission validation and promotion"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "azure-identity==1.19.0",
-  "azure-storage-blob==12.24.0",
-  "azure-storage-queue==12.12.0",
   "geopandas==1.0.1",
   "pyogrio==0.10.0",
   "shapely==2.0.6",
@@ -19,16 +16,14 @@ dependencies = [
   "linkml==1.11.1",
   "linkml-runtime==1.11.1",
   "jinja2==3.1.4",
-  "reportlab==4.2.5",
 ]
 
 [project.optional-dependencies]
-test = ["pytest==8.3.4", "pytest-cov==6.0.0"]
+pdf = ["reportlab==4.2.5"]
+test = ["pytest==8.3.4", "pytest-cov==6.0.0", "reportlab==4.2.5"]
 
 [project.scripts]
 hrl-pipeline = "hrl_restoration_pipeline.cli:main"
-hrl-validation-worker = "hrl_restoration_pipeline.worker:main"
-hrl-promotion-worker = "hrl_restoration_pipeline.promotion_worker:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/hrl_restoration_pipeline"]
