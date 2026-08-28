@@ -9,10 +9,22 @@ from typing import Any
 
 from . import __version__
 from .transformation import as_feature_collection
-from .validation import candidate_profile_errors, schema_provenance
-
+from .validation import candidate_profile_errors, multivalued_slots, schema_provenance
 
 _UNSET = object()
+
+# Documented download convention (submission_serialization: semicolon_delimited):
+# GeoJSON keeps multivalued slots as arrays; GeoPackage and CSV join them with
+# "; ". The map's own conversion scripts use the same delimiter.
+_MULTIVALUE_JOIN = "; "
+_MULTIVALUE_SPLIT = ";"
+
+
+def _flatten(value: Any) -> Any:
+    """Join a multivalued list into the "; "-delimited download form."""
+    if isinstance(value, list):
+        return _MULTIVALUE_JOIN.join(str(item) for item in value) if value else None
+    return value
 
 
 def merge(existing: list[dict[str, Any]], candidate: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -27,55 +39,105 @@ def _sha256(path: Path) -> str:
 
 
 def _write_csv(records: list[dict[str, Any]], path: Path) -> None:
+    """Attributes only: no geometry column. Multivalued slots joined with "; "."""
     keys = sorted({key for record in records for key in record if key != "geometry"})
-    fields = (["project_id"] if "project_id" in keys else []) + [key for key in keys if key != "project_id"] + ["geometry"]
+    fields = (["project_id"] if "project_id" in keys else []) + [key for key in keys if key != "project_id"]
     with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n", extrasaction="ignore")
         writer.writeheader()
         for record in sorted(records, key=lambda item: item["project_id"]):
-            row = {key: record.get(key) for key in fields if key != "geometry"}
-            row["geometry"] = json.dumps(record.get("geometry"), sort_keys=True, separators=(",", ":"))
-            writer.writerow(row)
+            writer.writerow({key: _flatten(record.get(key)) for key in fields})
 
 
 def _write_geopackage(records: list[dict[str, Any]], path: Path) -> None:
     import geopandas as gpd
     from shapely.geometry import shape
 
-    # OGR's GeoPackage writer does not support Python list columns. Preserve
-    # multivalued LinkML slots as deterministic JSON strings in that format.
-    rows = [{key: json.dumps(value, sort_keys=True, separators=(",", ":")) if isinstance(value, list) else value for key, value in record.items() if key != "geometry"} for record in records]
+    # GeoPackage columns are scalar; multivalued LinkML slots become "; "-joined
+    # strings, matching the GeoJSON->GPKG conversion the map ships. Give every
+    # row the same keys (None where a field is absent) so the writer never has
+    # to reconcile a ragged frame.
+    keys = sorted({key for record in records for key in record if key != "geometry"})
+    rows = [{key: _flatten(record.get(key)) for key in keys} for record in records]
     geometry = [shape(record["geometry"]) for record in records]
     gpd.GeoDataFrame(rows, geometry=geometry, crs="EPSG:3310").to_file(path, driver="GPKG", layer="projects", index=False)
+
+
+def _restore_row(properties: dict[str, Any], geometry: Any, multivalued: set[str]) -> dict[str, Any]:
+    """Rebuild a record from a GeoPackage or CSV row.
+
+    An unset GeoPackage cell reads back as a float NaN and a CSV cell as "";
+    both mean "field absent". Multivalued slots are split back to a list.
+    """
+    record: dict[str, Any] = {}
+    for key, value in properties.items():
+        if value is None or value == "" or (isinstance(value, float) and value != value):
+            continue
+        record[key] = (
+            [part.strip() for part in str(value).split(_MULTIVALUE_SPLIT) if part.strip()]
+            if key in multivalued
+            else value
+        )
+    record["geometry"] = geometry
+    return record
 
 
 def _validate_snapshot(records: list[dict[str, Any]], directory: Path) -> None:
     """Validate public contracts and spatial output before making it current."""
     import geopandas as gpd
+    from shapely.geometry import shape
 
-    expected_ids = [record["project_id"] for record in sorted(records, key=lambda item: item["project_id"])]
-    for name in ("projects.geojson", "projects.gpkg"):
-        frame = gpd.read_file(directory / name)
-        if frame.crs is None or frame.crs.to_epsg() != 3310:
-            raise ValueError(f"{name} is not EPSG:3310")
-        if frame.geometry.is_empty.any() or not frame.geometry.is_valid.all():
-            raise ValueError(f"{name} contains invalid geometry")
-        if name.endswith(".geojson"):
-            payload = json.loads((directory / name).read_text(encoding="utf-8"))
-            produced = [{**feature["properties"], "geometry": feature["geometry"]} for feature in payload["features"]]
-        else:
-            produced = []
-            for properties, geometry in zip(frame.drop(columns="geometry").to_dict("records"), frame.geometry):
-                restored = {key: json.loads(value) if isinstance(value, str) and value.startswith("[") else value for key, value in properties.items()}
-                produced.append({**restored, "geometry": geometry.__geo_interface__})
+    ordered = sorted(records, key=lambda item: item["project_id"])
+    expected_ids = [record["project_id"] for record in ordered]
+    multivalued = multivalued_slots("RestorationProjectPublicRecord")
+
+    # GeoJSON is the faithful representation: full LinkML validation happens here.
+    # It is read with json rather than gpd.read_file because OGR drops array
+    # columns (the multivalued slots) on read.
+    payload = json.loads((directory / "projects.geojson").read_text(encoding="utf-8"))
+    if payload.get("crs", {}).get("properties", {}).get("name") != "EPSG:3310":
+        raise ValueError("projects.geojson is not EPSG:3310")
+    geojson_records = [{**feature["properties"], "geometry": feature["geometry"]} for feature in payload["features"]]
+    if [record["project_id"] for record in geojson_records] != expected_ids:
+        raise ValueError("projects.geojson project ordering differs from the snapshot")
+    for record in geojson_records:
+        geometry = shape(record["geometry"])
+        if geometry.is_empty or not geometry.is_valid:
+            raise ValueError("projects.geojson contains invalid geometry")
+    errors = candidate_profile_errors(geojson_records, "RestorationProjectPublicRecord")
+    if errors:
+        raise ValueError(f"projects.geojson violates the public LinkML profile: {errors[0][1]}")
+
+    gpkg_frame = gpd.read_file(directory / "projects.gpkg")
+    if gpkg_frame.crs is None or gpkg_frame.crs.to_epsg() != 3310:
+        raise ValueError("projects.gpkg is not EPSG:3310")
+    if gpkg_frame.geometry.is_empty.any() or not gpkg_frame.geometry.is_valid.all():
+        raise ValueError("projects.gpkg contains invalid geometry")
+
+    # GeoPackage and CSV are "; "-delimited views of the same records: check they
+    # round-trip to the GeoJSON records rather than re-running LinkML on a lossy
+    # serialization.
+    reference = {record["project_id"]: {k: v for k, v in record.items() if k != "geometry"} for record in geojson_records}
+
+    gpkg_records = [
+        _restore_row(props, geom.__geo_interface__, multivalued)
+        for props, geom in zip(gpkg_frame.drop(columns="geometry").to_dict("records"), gpkg_frame.geometry)
+    ]
+
+    with (directory / "projects.csv").open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if "geometry" in (reader.fieldnames or []):
+            raise ValueError("projects.csv must not contain a geometry column")
+        csv_records = [_restore_row(row, None, multivalued) for row in reader]
+
+    for name, produced in (("projects.gpkg", gpkg_records), ("projects.csv", csv_records)):
         if [record["project_id"] for record in produced] != expected_ids:
             raise ValueError(f"{name} project ordering differs from the snapshot")
-        errors = candidate_profile_errors(produced, "RestorationProjectPublicRecord")
-        if errors:
-            raise ValueError(f"{name} violates the public LinkML profile: {errors[0][1]}")
-    csv_rows = list(csv.DictReader((directory / "projects.csv").open(encoding="utf-8", newline="")))
-    if [row["project_id"] for row in csv_rows] != expected_ids:
-        raise ValueError("projects.csv project ordering differs from the snapshot")
+        for record in produced:
+            want = reference[record["project_id"]]
+            for key in multivalued:
+                if want.get(key, []) != record.get(key, []):
+                    raise ValueError(f"{name} does not round-trip {key} for {record['project_id']}")
 
 
 def _pointer_checksum(root: Path) -> str | None:
