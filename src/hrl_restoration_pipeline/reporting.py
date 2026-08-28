@@ -31,11 +31,17 @@ def _write_pdf(report: Report, path: Path) -> None:
         return Canvas(filename, **kwargs)
     SimpleDocTemplate(str(path), pagesize=letter, title="HRL validation report").build(story, canvasmaker=deterministic_canvas)
 
-def write_reports(report: Report, directory: Path) -> None:
+def write_reports(report: Report, directory: Path, *, pdf: bool = False) -> None:
+    """Write the JSON report and its HTML companion; add the PDF only when asked.
+
+    JSON is the authoritative report. HTML is the copy an operator forwards to a
+    provider. PDF is opt-in (``--pdf``) and needs the ``pdf`` extra installed.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     directory.joinpath("validation-report.json").write_text(json.dumps(report.json(), indent=2, sort_keys=True))
     findings = "".join(f"<li class='{f.severity.lower()}'><b>{escape(f.severity)}</b> [{escape(f.stage)}] {escape(f.message)}</li>" for f in report.findings)
     warnings = "" if not report.warnings else f"<div class='warning-banner'>PASSED WITH {len(report.warnings)} WARNING(S): REVIEW BEFORE APPROVAL</div>"
     html = f"""<!doctype html><title>HRL validation report</title><style>body{{font:16px sans-serif;margin:2rem}}.warning-banner,.warning{{color:#7a4300;background:#fff3cd;padding:.7rem}}.error{{color:#9b1c1c}}.status{{font-size:1.5rem;font-weight:bold}}</style><h1>HRL Validation Report</h1><p class='status'>{report.status}</p><p>Validated: {escape(report.validation_timestamp)}</p>{warnings}<p>Errors: {len(report.errors)}; Warnings: {len(report.warnings)}</p><ul>{findings}</ul></html>"""
     directory.joinpath("validation-report.html").write_text(html)
-    _write_pdf(report, directory / "validation-report.pdf")
+    if pdf:
+        _write_pdf(report, directory / "validation-report.pdf")

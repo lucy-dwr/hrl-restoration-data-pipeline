@@ -9,7 +9,7 @@ import pytest
 
 from hrl_restoration_pipeline.ingestion import load_submission
 from hrl_restoration_pipeline.publication import activate_local_snapshot, merge, publish_local
-from hrl_restoration_pipeline.registry import SnapshotRegistry
+from hrl_restoration_pipeline.registry import CsvRegistry
 from hrl_restoration_pipeline.reporting import write_reports
 from hrl_restoration_pipeline.transformation import as_feature_collection, canonicalize, publicize
 from hrl_restoration_pipeline.validation import MANIFEST_PATH, SCHEMA_PATH, _resolve_lead_entities, candidate_profile_errors, validate_records
@@ -17,7 +17,7 @@ from hrl_restoration_pipeline.models import Report
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-def registry(): return SnapshotRegistry(FIXTURES / "registry.json", FIXTURES / "registry-manifest.json")
+def registry(): return CsvRegistry(FIXTURES / "registry.csv", ref="2026-08-24-test")
 
 def record(**updates):
     value = {"project_id": " HRL-001 ", "project_name": "Test", "project_description": "Description", "project_stage": "design", "lead_entity": "dwr", "early_implementation": True, "system": "Delta", "project_type": "tidal habitat", "acreage": 1.5, "target_species": "Chinook salmon"}
@@ -84,14 +84,16 @@ def test_spatial_errors_are_separate():
     _, report = validate_records([record()], registry(), manifest(), [{"project_id":"HRL-001", "geometry":{"type":"LineString", "coordinates":[]}}])
     assert {x.stage for x in report.errors} >= {"spatial"}
 
-def test_reports_include_authoritative_json_html_and_pdf(tmp_path):
+def test_reports_write_json_and_html_by_default_and_pdf_on_request(tmp_path):
     _, report = validate_records([record()], registry(), manifest(), validation_timestamp="2026-08-24T00:00:00Z")
     write_reports(report, tmp_path)
     assert json.loads((tmp_path / "validation-report.json").read_text())["status"] == "AWAITING_APPROVAL"
     assert "PASSED WITH" in (tmp_path / "validation-report.html").read_text()
-    assert (tmp_path / "validation-report.pdf").read_bytes().startswith(b"%PDF")
-    second = tmp_path / "second"; write_reports(report, second)
-    assert (tmp_path / "validation-report.pdf").read_bytes() == (second / "validation-report.pdf").read_bytes()
+    assert not (tmp_path / "validation-report.pdf").exists()
+    with_pdf = tmp_path / "with-pdf"; write_reports(report, with_pdf, pdf=True)
+    assert (with_pdf / "validation-report.pdf").read_bytes().startswith(b"%PDF")
+    second = tmp_path / "second"; write_reports(report, second, pdf=True)
+    assert (with_pdf / "validation-report.pdf").read_bytes() == (second / "validation-report.pdf").read_bytes()
 
 def test_invalid_geometry_and_reprojection_are_reported():
     _, report = validate_records([record()], registry(), manifest(), [{"project_id":"HRL-001", "crs":"EPSG:3310", "source_crs":"EPSG:4326", "reprojected":True, "geometry":{"type":"Polygon", "coordinates":[[[0,0],[1,1],[1,0],[0,1],[0,0]]]}}])
@@ -154,13 +156,19 @@ def test_rejects_corrupt_and_incomplete_shapefile_archives(tmp_path):
     with zipfile.ZipFile(tmp_path / "x.zip", "w") as archive: archive.writestr("x.shp", "placeholder")
     with pytest.raises(ValueError, match="incomplete"): load_submission(tmp_path)
 
-def test_csv_registry_and_checksum_enforcement(tmp_path):
-    export = tmp_path / "registry.csv"; export.write_text("project_id,status\nCSV-1,eligible\n")
-    checksum = hashlib.sha256(export.read_bytes()).hexdigest()
-    registry_manifest = tmp_path / "manifest.json"; registry_manifest.write_text(json.dumps({"source_registry":"test", "export_version":"v1", "checksums":{"registry.csv":checksum}}))
-    assert SnapshotRegistry(export, registry_manifest).eligible("CSV-1")
-    registry_manifest.write_text(json.dumps({"source_registry":"test", "export_version":"v1", "checksums":{"registry.csv":"wrong"}}))
-    with pytest.raises(ValueError, match="checksum"): SnapshotRegistry(export, registry_manifest)
+def test_csv_registry_reads_the_plain_file_and_records_provenance(tmp_path):
+    export = tmp_path / "project-id-registry.csv"
+    export.write_text("project_id,status,project_name,assigned_organization_code,assigned_at,superseded_by_project_id\n"
+                      "HRL-050,eligible,Example,DWR,2026-08-24,\nHRL-051,retired,Gone,DWR,2026-08-24,\n")
+    reg = CsvRegistry(export, ref="abc1234")
+    assert reg.eligible("HRL-050")
+    assert not reg.eligible("HRL-051")
+    assert not reg.eligible("HRL-999")
+    provenance = reg.provenance()
+    assert provenance["version"] == "abc1234"
+    assert provenance["checksum"] == hashlib.sha256(export.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="csv"):
+        CsvRegistry(tmp_path / "registry.json")
 
 @pytest.mark.parametrize("suffix", [".geojson", ".gpkg", ".zip"])
 def test_each_supported_ingestion_format(tmp_path, suffix):
@@ -208,8 +216,12 @@ def _write_cli_submission(directory: Path, suffix: str, values: dict | None = No
     return directory / primary
 
 
-def _run_cli(submission: Path, output: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["hrl-pipeline", str(submission), "--registry", str(FIXTURES / "registry.json"), "--registry-manifest", str(FIXTURES / "registry-manifest.json"), "--output", str(output)], text=True, capture_output=True, check=False)
+def _run_cli(submission: Path, output: Path, *, pdf: bool = False) -> subprocess.CompletedProcess[str]:
+    command = ["hrl-pipeline", str(submission), "--registry", str(FIXTURES / "registry.csv"),
+               "--registry-ref", "2026-08-24-test", "--output", str(output)]
+    if pdf:
+        command.append("--pdf")
+    return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
 def _run_promote(candidate: Path, master: Path, public_root: Path, version: str) -> subprocess.CompletedProcess[str]:
@@ -239,7 +251,7 @@ def test_cli_valid_submissions_write_all_acceptance_artifacts_without_mutating_s
     assert completed.returncode == 0, completed.stderr
     assert json.loads((output / "validation-report.json").read_text())["status"] == "AWAITING_APPROVAL"
     assert (output / "validation-report.html").is_file()
-    assert (output / "validation-report.pdf").read_bytes().startswith(b"%PDF")
+    assert not (output / "validation-report.pdf").exists()
     assert json.loads((output / "status.json").read_text())["status"] == "AWAITING_APPROVAL"
     canonical = output / "canonical-candidate.geojson"; public = output / "public-candidate.geojson"
     assert canonical.is_file() and public.is_file()
@@ -292,9 +304,17 @@ def test_cli_invalid_cases_write_reports_and_do_not_publish_candidates(tmp_path,
     assert completed.returncode == 2, completed.stderr
     report = json.loads((output / "validation-report.json").read_text())
     assert report["status"] == "NEEDS_CORRECTION"
-    assert (output / "validation-report.html").is_file() and (output / "validation-report.pdf").is_file()
+    assert (output / "validation-report.html").is_file() and not (output / "validation-report.pdf").exists()
     assert not (output / "canonical-candidate.geojson").exists()
     assert not (output / "public-candidate.geojson").exists()
+
+
+def test_cli_pdf_flag_emits_a_pdf_companion(tmp_path):
+    submission = tmp_path / "submission"; submission.mkdir()
+    _write_cli_submission(submission, ".geojson")
+    output = tmp_path / "output"
+    assert _run_cli(submission, output, pdf=True).returncode == 0
+    assert (output / "validation-report.pdf").read_bytes().startswith(b"%PDF")
 
 
 def test_cli_legacy_funding_gap_warns_and_passes_through_to_canonical_only(tmp_path):
