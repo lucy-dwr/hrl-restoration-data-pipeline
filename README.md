@@ -15,8 +15,10 @@ Python 3.11+ and a GDAL/GEOS/PROJ stack (via `geopandas`/`pyogrio` wheels, or
 the optional Docker image).
 
 ```bash
-python -m pip install -e '.[test]'      # add ,pdf for PDF reports
+python -m pip install '.[pdf]'
 ```
+
+For development tests, install `.[test]` instead.
 
 ## Validate a submission
 
@@ -24,25 +26,33 @@ python -m pip install -e '.[test]'      # add ,pdf for PDF reports
 hrl-pipeline <submission-directory> \
   --registry /path/to/hrl-project-registry/project-id-registry.csv \
   --registry-ref <commit-or-tag the registry is pinned to> \
-  --output ./out/<submission-id>
+  --output ./out/<submission-id> \
+  --pdf
 ```
 
 The submission directory contains `submission.json`, one primary spatial file
 (`.gpkg`, `.geojson`, or a `.zip` shapefile package), and `_READY`. Validation
-checks package safety, geometry, the pinned LinkML profiles, controlled
-vocabularies, business rules, and the pinned project-ID registry. It stages the
-source read-only and writes create-only artifacts.
+checks package safety, geometry (including that coordinates fall within the
+expected geographic extent once unprojected, which catches a wrong or missing
+source CRS), the pinned LinkML profiles, controlled vocabularies, business
+rules, and the pinned project-ID registry. It stages the source read-only and
+writes create-only artifacts.
+
+Coordinates are reprojected to the equal-area working CRS (EPSG:3310) on read;
+canonical storage and the candidate GeoJSON stay in it. The published public
+snapshot's `projects.geojson` is reprojected to WGS84 lon/lat (RFC 7946), which
+is what the map and other GeoJSON consumers require; the `projects.gpkg`
+download stays in EPSG:3310.
 
 Outputs in `--output`:
 
 | Outcome | Files | Exit code |
 | --- | --- | --- |
-| `AWAITING_APPROVAL` | `validation-report.json`, `validation-report.html`, `canonical-candidate.geojson`, `public-candidate.geojson`, `candidate-manifest.json`, `status.json` | 0 |
-| `NEEDS_CORRECTION` | `validation-report.json`, `validation-report.html`, `status.json` | 2 |
+| `AWAITING_APPROVAL` | `validation-report.json`, `validation-report.html`, `validation-report.pdf`, `canonical-candidate.geojson`, `public-candidate.geojson`, `candidate-manifest.json`, `status.json` | 0 |
+| `NEEDS_CORRECTION` | `validation-report.json`, `validation-report.html`, `validation-report.pdf`, `status.json` | 2 |
 
-Add `--pdf` for a `validation-report.pdf` companion (needs the `pdf` extra). The
-JSON report is authoritative; the HTML is the copy an operator forwards to a
-provider.
+The JSON report is authoritative. The PDF is the standard human-readable
+review and provider-facing copy; HTML is also written for browser viewing.
 
 ## Promote an approved candidate
 
@@ -63,14 +73,14 @@ Then:
 
 ```bash
 hrl-pipeline promote ./out/<submission-id> \
-  --master /path/to/standardized/canonical-master.geojson \
+  --canonical /path/to/standardized/canonical-restoration-projects.geojson \
   --public-root /path/to/public-exports/restoration-map/restoration-projects \
   --version 2026-08-24
 ```
 
 Promotion re-checks every candidate artifact checksum and the schema/registry
 provenance against `_APPROVE`, merges only submitted IDs into the canonical
-master, writes a previously unused immutable public snapshot, updates
+dataset, writes a previously unused immutable public snapshot, updates
 `current.json` last, and records a private promotion audit. A failed or
 interrupted promotion preserves the previous `current.json`.
 

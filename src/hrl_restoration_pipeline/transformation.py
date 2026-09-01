@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import Any
-from .validation import SCHEMA_PATH
+from .validation import PUBLIC_EPSG, PUBLIC_GEOJSON_CRS, SCHEMA_PATH, WORKING_EPSG, reproject_geometry
 from linkml_runtime.utils.schemaview import SchemaView
 
 def canonicalize(records: list[dict[str, Any]], manifest: dict[str, Any]) -> list[dict[str, Any]]:
@@ -24,6 +24,25 @@ def publicize(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 def as_feature_collection(records: list[dict[str, Any]]) -> dict[str, Any]:
-    # Candidate and local-publication geometries have been reprojected during
-    # ingestion. Include the explicit CRS member for offline GIS consumers.
-    return {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": "EPSG:3310"}}, "features": [{"type": "Feature", "properties": {k: v for k, v in record.items() if k != "geometry"}, "geometry": record.get("geometry")} for record in records]}
+    # Internal working form: canonical storage and the candidate GeoJSON. Geometry
+    # is in the equal-area working CRS (EPSG:3310), reprojected during ingestion;
+    # the explicit CRS member keeps it unambiguous for offline GIS consumers.
+    return {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": f"EPSG:{WORKING_EPSG}"}}, "features": [{"type": "Feature", "properties": {k: v for k, v in record.items() if k != "geometry"}, "geometry": record.get("geometry")} for record in records]}
+
+
+def public_feature_collection(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """WGS84 lon/lat FeatureCollection (RFC 7946) for the public map and downloads.
+
+    Internal candidate and canonical GeoJSON stay in the equal-area working CRS;
+    only this published form is reprojected to lon/lat, which is what web maps
+    and the GeoJSON RFC require. The GeoPackage download stays in the working CRS.
+    """
+    features = []
+    for record in records:
+        geometry = record.get("geometry")
+        features.append({
+            "type": "Feature",
+            "properties": {k: v for k, v in record.items() if k != "geometry"},
+            "geometry": reproject_geometry(geometry, WORKING_EPSG, PUBLIC_EPSG) if geometry else None,
+        })
+    return {"type": "FeatureCollection", "crs": {"type": "name", "properties": {"name": PUBLIC_GEOJSON_CRS}}, "features": features}

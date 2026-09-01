@@ -1,6 +1,7 @@
 from __future__ import annotations
 import argparse, hashlib, json, os
 from pathlib import Path
+from . import __version__
 from .ingestion import load_submission
 from .registry import CsvRegistry
 from .reporting import write_reports
@@ -12,6 +13,22 @@ CANDIDATE_REPORT_ARTIFACTS = ("validation-report.json", "validation-report.html"
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _input_file_metadata(source: Path, records: list[dict], spatial: list[dict]) -> dict[str, str]:
+    metadata = {
+        "filename": source.name,
+        "format": source.suffix.lower().removeprefix("."),
+        "size_bytes": str(source.stat().st_size),
+        "sha256": _sha256(source),
+        "feature_count": str(len(records)),
+        "source_crs": str(next((item.get("source_crs") for item in spatial if item.get("source_crs")), "unavailable")),
+        "validated_crs": str(next((item.get("crs") for item in spatial if item.get("crs")), "unavailable")),
+    }
+    if source.suffix.lower() == ".gpkg":
+        import pyogrio
+        metadata["layer"] = str(pyogrio.list_layers(source)[0][0])
+    return metadata
 
 
 def _write_candidate_manifest(directory: Path, report, submission_manifest: dict) -> None:
@@ -44,9 +61,11 @@ def _validate_main(argv: list[str] | None = None) -> int:
         manifest, source = load_submission(args.submission)
         records, spatial = read_spatial(source)
         normalized, report = validate_records(records, CsvRegistry(args.registry, args.registry_ref), manifest, spatial)
+        report.submission_metadata = {key: str(value) for key, value in manifest.items()}
+        report.input_file = _input_file_metadata(source, records, spatial)
     except (ValueError, OSError) as exc:
         from .models import Report
-        report = Report(None, {}, {}, "0.2.0", "unavailable"); report.add("package", "ERROR", "package_validation", str(exc)); normalized = []; manifest = {}
+        report = Report(None, {}, {}, __version__, "unavailable"); report.add("package", "ERROR", "package_validation", str(exc)); normalized = []; manifest = {}
     candidate_ready = False
     if not report.errors:
         canonical = canonicalize(normalized, manifest)
@@ -72,12 +91,12 @@ def _promote_main(argv: list[str]) -> int:
 
     parser = argparse.ArgumentParser(prog="hrl-pipeline promote")
     parser.add_argument("candidate", type=Path, help="AWAITING_APPROVAL candidate directory containing _APPROVE")
-    parser.add_argument("--master", type=Path, required=True, help="local canonical-master.geojson path")
+    parser.add_argument("--canonical", type=Path, required=True, help="local canonical-restoration-projects.geojson path")
     parser.add_argument("--public-root", type=Path, required=True, help="local immutable public snapshot root")
     parser.add_argument("--version", required=True, help="must match _APPROVE publication_version")
     args = parser.parse_args(argv)
     try:
-        promote_local(args.candidate, args.master, args.public_root, args.version)
+        promote_local(args.candidate, args.canonical, args.public_root, args.version)
     except (ValueError, OSError, FileExistsError) as exc:
         parser.error(str(exc))
     return 0
