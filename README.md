@@ -3,22 +3,46 @@
 Deterministic, local validation and promotion for HRL restoration project
 submissions. No Azure orchestration, no queue workers, no database.
 
-The HRL data operator runs these two commands as part of the email-to-
-publication workflow. Cross-repository context is in
-[`hrl-azure-infrastructure/PIPELINE_INFRA.md`](https://github.com/lucy-dwr/hrl-azure-infrastructure/blob/main/PIPELINE_INFRA.md);
-the step-by-step operator routine is
-[`hrl-azure-infrastructure/docs/operator-checklist.md`](https://github.com/lucy-dwr/hrl-azure-infrastructure/blob/main/docs/operator-checklist.md).
+> **If you are the data operator:** do not set this up from this README. Start
+> at
+> [`hrl-azure-infrastructure/RESTORATION_DATA_WORKFLOW.md`](https://github.com/Healthy-Rivers-and-Landscapes-Science/hrl-azure-infrastructure/blob/main/RESTORATION_DATA_WORKFLOW.md)
+> &mdash; it has the full one-time setup for Windows and macOS, and the routine
+> to run each time.
+
+> **If you maintain this tool:** read [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+Cross-repository context is in
+[`hrl-azure-infrastructure/PIPELINE_INFRA.md`](https://github.com/Healthy-Rivers-and-Landscapes-Science/hrl-azure-infrastructure/blob/main/PIPELINE_INFRA.md);
+the short operator routine is
+[`hrl-azure-infrastructure/docs/operator-checklist.md`](https://github.com/Healthy-Rivers-and-Landscapes-Science/hrl-azure-infrastructure/blob/main/docs/operator-checklist.md);
+roles and ownership are in
+[`DIVISION_OF_RESPONSIBILITIES.md`](https://github.com/Healthy-Rivers-and-Landscapes-Science/hrl-azure-infrastructure/blob/main/DIVISION_OF_RESPONSIBILITIES.md).
+
+The operator installs from the `main` branch and reinstalls before every run;
+there are no release tags. See [`CONTRIBUTING.md` &rarr; "Release
+model"](CONTRIBUTING.md#release-model-main-is-the-release-channel).
 
 ## Install
 
-Python 3.11+ and a GDAL/GEOS/PROJ stack (via `geopandas`/`pyogrio` wheels, or
-the optional Docker image).
+Needs Python 3.11+ and a GDAL / GEOS / PROJ stack.
 
 ```bash
 python -m pip install '.[pdf]'
 ```
 
-For development tests, install `.[test]` instead.
+The `.[pdf]` extra adds the PDF report. For development tests, install `.[test]`.
+
+**The GDAL stack** usually arrives with the `geopandas` / `pyogrio` / `shapely` /
+`pyproj` wheels and needs nothing extra. If those wheels fail to build (common on
+Windows without build tools), use the Docker image instead:
+
+```bash
+docker build --target base --tag hrl-pipeline .
+docker run --rm -v "$PWD:/work" -w /work hrl-pipeline <submission> --registry ...
+```
+
+The image is a convenience only &mdash; it has no production runtime role, no
+Azure SDKs, and no credentials.
 
 ## Validate a submission
 
@@ -86,16 +110,14 @@ interrupted promotion preserves the previous `current.json`.
 
 ## Schema snapshot
 
-The pipeline pins `hrl-restoration-schema` **v1.3.1** by immutable commit and
-checksum under `schema-snapshots/`. After an approved schema release, on a
-review branch:
-
-```bash
-python scripts/import_schema_snapshot.py vX.Y.Z
-```
-
-Then update `SCHEMA_PATH` in `src/hrl_restoration_pipeline/validation.py`,
-adjust fixtures, and run `pytest`. Schema import is an explicit reviewed change.
+The pipeline validates against one immutable `hrl-restoration-schema` snapshot,
+currently **v1.3.1**, pinned by commit and checksum under `schema-snapshots/`.
+Adopting a new release is an explicit, reviewed change: run
+`python scripts/import_schema_snapshot.py vX.Y.Z`, then update
+`_SNAPSHOT_RELATIVE_PATH` in `src/hrl_restoration_pipeline/validation.py` and the
+`force-include` path in `pyproject.toml`, adjust fixtures, and run `pytest`.
+Full procedure and ordering: [`CONTRIBUTING.md` &rarr; "Updating the pinned
+schema"](CONTRIBUTING.md#updating-the-pinned-schema).
 
 ## Project-ID registry input
 
