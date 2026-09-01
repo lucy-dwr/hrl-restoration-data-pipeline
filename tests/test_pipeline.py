@@ -37,6 +37,7 @@ def test_valid_record_is_repaired_and_awaits_approval():
     assert report.status == "AWAITING_APPROVAL"
     assert values[0]["project_id"] == "HRL-001"
     assert report.repairs and report.warnings
+    assert report.pipeline_version == "0.3.0"
     assert report.json()["registry"]["version"] == "2026-08-24-test"
 
 def test_nan_optional_values_are_normalized_to_missing():
@@ -86,9 +87,17 @@ def test_spatial_errors_are_separate():
 
 def test_reports_write_json_and_html_by_default_and_pdf_on_request(tmp_path):
     _, report = validate_records([record()], registry(), manifest(), validation_timestamp="2026-08-24T00:00:00Z")
+    report.submission_metadata = {"organization": "Example organization", "primary_file": "projects.gpkg"}
+    report.input_file = {"filename": "projects.gpkg", "feature_count": "1"}
+    report.add("business", "WARNING", "stage_requiredness", "funding_secured is not yet supplied", "HRL-001")
     write_reports(report, tmp_path)
     assert json.loads((tmp_path / "validation-report.json").read_text())["status"] == "AWAITING_APPROVAL"
-    assert "PASSED WITH" in (tmp_path / "validation-report.html").read_text()
+    html = (tmp_path / "validation-report.html").read_text()
+    assert "<meta charset=\"utf-8\">" in html
+    assert "PASSED WITH" in html and "Example organization" in html
+    assert "<th>Check</th>" in html and "<th>What needs review</th>" in html
+    assert "<strong>HRL-001</strong><br><span>Test</span>" in html
+    assert "Required fields for the project stage" in html
     assert not (tmp_path / "validation-report.pdf").exists()
     with_pdf = tmp_path / "with-pdf"; write_reports(report, with_pdf, pdf=True)
     assert (with_pdf / "validation-report.pdf").read_bytes().startswith(b"%PDF")
@@ -99,6 +108,18 @@ def test_invalid_geometry_and_reprojection_are_reported():
     _, report = validate_records([record()], registry(), manifest(), [{"project_id":"HRL-001", "crs":"EPSG:3310", "source_crs":"EPSG:4326", "reprojected":True, "geometry":{"type":"Polygon", "coordinates":[[[0,0],[1,1],[1,0],[0,1],[0,0]]]}}])
     assert any(x.rule == "valid_geometry" for x in report.errors)
     assert any(x.rule == "reproject_to_epsg_3310" for x in report.repairs)
+
+def test_geometry_outside_the_expected_extent_is_an_error():
+    # A valid EPSG:3310 polygon that lands well outside California once
+    # unprojected: the kind of result a wrong source CRS produces.
+    far = {"type": "Polygon", "coordinates": [[[2_000_000, 0], [2_000_100, 0], [2_000_100, 100], [2_000_000, 0]]]}
+    _, report = validate_records([record()], registry(), manifest(), [{"project_id": "HRL-001", "crs": "EPSG:3310", "geometry": far}])
+    assert any(x.rule == "geometry_in_range" and x.severity == "ERROR" for x in report.errors)
+
+def test_geometry_in_range_check_is_skipped_without_an_input_crs():
+    _, report = validate_records([record()], registry(), manifest(), [{"project_id": "HRL-001", "geometry": {"type": "Point", "coordinates": [2_000_000, 0]}}])
+    assert any(x.rule == "crs_required" for x in report.errors)
+    assert not any(x.rule == "geometry_in_range" for x in report.findings)
 
 def test_candidate_profiles_conform_when_complete():
     complete = record(project_id="HRL-001", estimated_budget=100, funding_secured=40, construction_start_year=2026, construction_completion_year=2027, geometry={"type":"Point", "coordinates":[1,2]})
@@ -224,8 +245,8 @@ def _run_cli(submission: Path, output: Path, *, pdf: bool = False) -> subprocess
     return subprocess.run(command, text=True, capture_output=True, check=False)
 
 
-def _run_promote(candidate: Path, master: Path, public_root: Path, version: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["hrl-pipeline", "promote", str(candidate), "--master", str(master), "--public-root", str(public_root), "--version", version], text=True, capture_output=True, check=False)
+def _run_promote(candidate: Path, canonical: Path, public_root: Path, version: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["hrl-pipeline", "promote", str(candidate), "--canonical", str(canonical), "--public-root", str(public_root), "--version", version], text=True, capture_output=True, check=False)
 
 
 def _assert_candidate_contract(path: Path, profile: str) -> None:
@@ -249,7 +270,14 @@ def test_cli_valid_submissions_write_all_acceptance_artifacts_without_mutating_s
     output = tmp_path / "output"
     completed = _run_cli(submission, output)
     assert completed.returncode == 0, completed.stderr
-    assert json.loads((output / "validation-report.json").read_text())["status"] == "AWAITING_APPROVAL"
+    report = json.loads((output / "validation-report.json").read_text())
+    assert report["status"] == "AWAITING_APPROVAL"
+    assert report["submission_metadata"]["submission_id"] == "cli-test"
+    assert report["input_file"]["filename"] == f"projects{suffix}"
+    assert report["input_file"]["feature_count"] == "1"
+    assert report["record_names"]["HRL-001"] == "CLI project"
+    if suffix == ".gpkg":
+        assert report["input_file"]["layer"] == "projects"
     assert (output / "validation-report.html").is_file()
     assert not (output / "validation-report.pdf").exists()
     assert json.loads((output / "status.json").read_text())["status"] == "AWAITING_APPROVAL"
@@ -304,6 +332,8 @@ def test_cli_invalid_cases_write_reports_and_do_not_publish_candidates(tmp_path,
     assert completed.returncode == 2, completed.stderr
     report = json.loads((output / "validation-report.json").read_text())
     assert report["status"] == "NEEDS_CORRECTION"
+    if report["input_file"]:
+        assert report["submission_metadata"]["primary_file"] == report["input_file"]["filename"]
     assert (output / "validation-report.html").is_file() and not (output / "validation-report.pdf").exists()
     assert not (output / "canonical-candidate.geojson").exists()
     assert not (output / "public-candidate.geojson").exists()
@@ -389,6 +419,41 @@ def test_publication_output_conventions_and_sparse_multivalue_fields(tmp_path):
     assert frame.sort_values("project_id").iloc[0]["target_species"] == "Chinook salmon"
 
 
+def test_public_geojson_is_wgs84_lonlat_while_geopackage_keeps_the_working_crs(tmp_path):
+    import geopandas as gpd
+
+    from hrl_restoration_pipeline.validation import EXPECTED_WGS84_BOUNDS, PUBLIC_GEOJSON_CRS, positions_outside
+
+    normalized = {"project_stage": ["design"], "lead_entity": ["dwr"], "project_type": ["tidal habitat"], "target_species": ["Chinook salmon"]}
+    # EPSG:3310 coordinates near HRL's real footprint.
+    footprint = {"type": "Polygon", "coordinates": [[[-127701.0, 28177.2], [-127714.0, 27974.2], [-127919.1, 28009.9], [-127701.0, 28177.2]]]}
+    public = publicize(canonicalize([_cli_record("HRL-001", geometry=footprint, **normalized)], manifest()))
+    target = publish_local(public, tmp_path / "exports", "2026-08-31", {"schema_version": "v1.3.1"})
+
+    payload = json.loads((target / "projects.geojson").read_text())
+    assert payload["crs"]["properties"]["name"] == PUBLIC_GEOJSON_CRS
+    lon, lat = payload["features"][0]["geometry"]["coordinates"][0][0]
+    assert -122.0 < lon < -121.0 and 38.0 < lat < 39.0
+    assert positions_outside(payload["features"][0]["geometry"], EXPECTED_WGS84_BOUNDS) == []
+
+    assert gpd.read_file(target / "projects.gpkg").crs.to_epsg() == 3310
+    assert json.loads((target / "metadata.json").read_text())["artifact_crs"] == {"projects.geojson": "EPSG:4326", "projects.gpkg": "EPSG:3310"}
+
+
+def test_publish_rejects_a_snapshot_that_is_not_lonlat_and_preserves_the_pointer(tmp_path, monkeypatch):
+    normalized = {"project_stage": ["design"], "lead_entity": ["dwr"], "project_type": ["tidal habitat"], "target_species": ["Chinook salmon"]}
+    public = publicize(canonicalize([_cli_record("HRL-001", geometry={"type": "Point", "coordinates": [-127701.0, 28177.2]}, **normalized)], manifest()))
+    root = tmp_path / "exports"
+    publish_local(public, root, "good")
+    pointer_before = (root / "current.json").read_text()
+    # Simulate the projected-meters regression: skip the reprojection step.
+    monkeypatch.setattr("hrl_restoration_pipeline.transformation.reproject_geometry", lambda geometry, *_: geometry)
+    with pytest.raises(ValueError, match="lon/lat"):
+        publish_local(public, root, "bad")
+    assert (root / "current.json").read_text() == pointer_before
+    assert not (root / "bad").exists()
+
+
 def test_publication_conditional_pointer_preserves_competing_current_version(tmp_path):
     normalized = {"project_stage": ["design"], "lead_entity": ["dwr"], "project_type": ["tidal habitat"], "target_species": ["Chinook salmon"]}
     public = publicize(canonicalize([_cli_record("HRL-001", geometry={"type": "Point", "coordinates": [100, 200]}, **normalized)], manifest()))
@@ -408,32 +473,32 @@ def test_cli_promotion_requires_explicit_matching_approval_and_upserts_local_mas
     _write_cli_submission(submission, ".geojson", _cli_record("HRL-001"))
     candidate = tmp_path / "candidate"
     assert _run_cli(submission, candidate).returncode == 0
-    master = tmp_path / "standardized" / "canonical-master.geojson"; public_root = tmp_path / "public"
+    canonical = tmp_path / "standardized" / "canonical-restoration-projects.geojson"; public_root = tmp_path / "public"
     normalized = {"project_stage": ["design"], "lead_entity": ["dwr"], "project_type": ["tidal habitat"], "target_species": ["Chinook salmon"]}
     old = canonicalize([_cli_record("HRL-OLD", project_name="Kept because absent", geometry={"type": "Point", "coordinates": [50, 50]}, **normalized)], manifest())
-    master.parent.mkdir()
-    master.write_text(json.dumps(as_feature_collection(old), indent=2, sort_keys=True))
-    assert _run_promote(candidate, master, public_root, "2026-08-24").returncode == 2
+    canonical.parent.mkdir()
+    canonical.write_text(json.dumps(as_feature_collection(old), indent=2, sort_keys=True))
+    assert _run_promote(candidate, canonical, public_root, "2026-08-24").returncode == 2
     assert not (public_root / "current.json").exists()
     approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval, sort_keys=True))
     before = {path.relative_to(candidate): hashlib.sha256(path.read_bytes()).hexdigest() for path in candidate.rglob("*") if path.is_file()}
-    completed = _run_promote(candidate, master, public_root, "2026-08-24")
+    completed = _run_promote(candidate, canonical, public_root, "2026-08-24")
     assert completed.returncode == 0, completed.stderr
-    master_records = json.loads(master.read_text())["features"]
-    assert [feature["properties"]["project_id"] for feature in master_records] == ["HRL-001", "HRL-OLD"]
+    canonical_records = json.loads(canonical.read_text())["features"]
+    assert [feature["properties"]["project_id"] for feature in canonical_records] == ["HRL-001", "HRL-OLD"]
     assert json.loads((public_root / "current.json").read_text())["snapshot_version"] == "2026-08-24"
     metadata = json.loads((public_root / "2026-08-24" / "metadata.json").read_text())
     assert metadata["source_submission_id"] == "cli-test" and metadata["approved_at"] == approval["approved_at"]
     assert metadata["candidate_manifest_sha256"] == approval["candidate_manifest_sha256"]
-    audit = json.loads((master.parent / "promotion-audits" / "2026-08-24.json").read_text())
+    audit = json.loads((canonical.parent / "promotion-audits" / "2026-08-24.json").read_text())
     assert audit["submission_id"] == "cli-test"
     assert audit["approved_by"] == approval["approved_by"]
     assert audit["data_steward"]["email"] == "steward@example.org"
     after = {path.relative_to(candidate): hashlib.sha256(path.read_bytes()).hexdigest() for path in candidate.rglob("*") if path.is_file()}
     assert after == before
     (candidate / "public-candidate.geojson").write_text("tampered")
-    assert _run_promote(candidate, master, public_root, "2026-08-24-r2").returncode == 2
+    assert _run_promote(candidate, canonical, public_root, "2026-08-24-r2").returncode == 2
     assert not (public_root / "2026-08-24-r2").exists()
 
 
@@ -444,15 +509,15 @@ def test_cli_promotion_rejects_repeated_candidate_and_preserves_current_pointer(
     assert _run_cli(submission, candidate).returncode == 0
     approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval))
-    master = tmp_path / "standardized" / "canonical-master.geojson"; public_root = tmp_path / "public"
-    assert _run_promote(candidate, master, public_root, "2026-08-24").returncode == 0
+    canonical = tmp_path / "standardized" / "canonical-restoration-projects.geojson"; public_root = tmp_path / "public"
+    assert _run_promote(candidate, canonical, public_root, "2026-08-24").returncode == 0
     pointer_before = (public_root / "current.json").read_text()
-    master_before = master.read_text()
-    repeated = _run_promote(candidate, master, public_root, "2026-08-24-r2")
+    canonical_before = canonical.read_text()
+    repeated = _run_promote(candidate, canonical, public_root, "2026-08-24-r2")
     assert repeated.returncode == 2
     assert "publication_version does not match requested promotion version" in repeated.stderr
     assert (public_root / "current.json").read_text() == pointer_before
-    assert master.read_text() == master_before
+    assert canonical.read_text() == canonical_before
     assert not (public_root / "2026-08-24-r2").exists()
 
 
@@ -466,7 +531,7 @@ def test_cli_promotion_requires_complete_checksum_manifest(tmp_path):
     (candidate / "candidate-manifest.json").write_text(json.dumps(candidate_manifest, sort_keys=True))
     approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval))
-    completed = _run_promote(candidate, tmp_path / "master.geojson", tmp_path / "public", "2026-08-24")
+    completed = _run_promote(candidate, tmp_path / "canonical-restoration-projects.geojson", tmp_path / "public", "2026-08-24")
     assert completed.returncode == 2
     assert "candidate-manifest.json is incomplete" in completed.stderr
     assert not (tmp_path / "public" / "current.json").exists()
@@ -481,13 +546,13 @@ def test_cli_promotion_rejects_mismatched_approval_without_changing_current_poin
     _write_cli_submission(submission, ".geojson")
     candidate = tmp_path / "candidate"
     assert _run_cli(submission, candidate).returncode == 0
-    master = tmp_path / "standardized" / "canonical-master.geojson"; public_root = tmp_path / "public"
+    canonical = tmp_path / "standardized" / "canonical-restoration-projects.geojson"; public_root = tmp_path / "public"
     approval = {"submission_id": "cli-test", "publication_version": "2026-08-24", "approved_by": "local-reviewer", "approved_at": "2026-08-24T20:00:00Z", "candidate_manifest_sha256": hashlib.sha256((candidate / "candidate-manifest.json").read_bytes()).hexdigest()}
     (candidate / "_APPROVE").write_text(json.dumps(approval))
-    assert _run_promote(candidate, master, public_root, "2026-08-24").returncode == 0
+    assert _run_promote(candidate, canonical, public_root, "2026-08-24").returncode == 0
     pointer_before = (public_root / "current.json").read_text()
     (candidate / "_APPROVE").write_text(json.dumps(change(approval)))
-    failed = _run_promote(candidate, master, public_root, "2026-08-24-r2")
+    failed = _run_promote(candidate, canonical, public_root, "2026-08-24-r2")
     assert failed.returncode == 2
     assert (public_root / "current.json").read_text() == pointer_before
     assert not (public_root / "2026-08-24-r2").exists()
@@ -497,6 +562,6 @@ def test_cli_promotion_rejects_mismatched_approval_without_changing_current_poin
 def test_cli_promotion_rejects_invalid_approval_markers_without_writing(tmp_path, approval):
     candidate = tmp_path / "candidate"; candidate.mkdir()
     (candidate / "_APPROVE").write_text(approval)
-    completed = _run_promote(candidate, tmp_path / "master.geojson", tmp_path / "public", "2026-08-24")
+    completed = _run_promote(candidate, tmp_path / "canonical-restoration-projects.geojson", tmp_path / "public", "2026-08-24")
     assert completed.returncode == 2
-    assert not (tmp_path / "master.geojson").exists() and not (tmp_path / "public" / "current.json").exists()
+    assert not (tmp_path / "canonical-restoration-projects.geojson").exists() and not (tmp_path / "public" / "current.json").exists()

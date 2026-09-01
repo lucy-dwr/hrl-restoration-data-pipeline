@@ -118,11 +118,11 @@ def _already_promoted(audit_directory: Path, manifest_checksum: str) -> bool:
     return False
 
 
-def promote_local(candidate_directory: Path, master_path: Path, public_root: Path, version: str) -> Path:
+def promote_local(candidate_directory: Path, canonical_path: Path, public_root: Path, version: str) -> Path:
     """Merge an explicitly approved candidate and create a public snapshot.
 
     The raw submission and candidate are read only. Records absent from the
-    candidate remain in the canonical master; promotion never allocates or
+    candidate remain in the canonical dataset; promotion never allocates or
     changes project IDs.
     """
     approval = _approval(candidate_directory)
@@ -131,7 +131,7 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
     manifest, manifest_checksum = _candidate_manifest(candidate_directory)
     if approval["candidate_manifest_sha256"] != manifest_checksum:
         raise ValueError("approval marker does not match the current candidate manifest")
-    audit_path = master_path.parent / "promotion-audits" / f"{version}.json"
+    audit_path = canonical_path.parent / "promotion-audits" / f"{version}.json"
     if audit_path.exists():
         raise FileExistsError("immutable promotion audit already exists")
     if _already_promoted(audit_path.parent, manifest_checksum):
@@ -145,11 +145,11 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
             or manifest["schema"] != status.get("schema") or manifest["registry"] != status.get("registry")):
         raise ValueError("approval marker does not match an AWAITING_APPROVAL candidate")
     candidate = _load_records(candidate_directory / "canonical-candidate.geojson", "RestorationProjectCanonicalRecord")
-    existing = _load_records(master_path, "RestorationProjectCanonicalRecord") if master_path.exists() else []
+    existing = _load_records(canonical_path, "RestorationProjectCanonicalRecord") if canonical_path.exists() else []
     merged = merge(existing, candidate)
     errors = candidate_profile_errors(merged, "RestorationProjectCanonicalRecord")
     if errors:
-        raise ValueError(f"merged master violates RestorationProjectCanonicalRecord: {errors[0][1]}")
+        raise ValueError(f"merged canonical dataset violates RestorationProjectCanonicalRecord: {errors[0][1]}")
     expected_pointer_checksum = _pointer_checksum(public_root)
     snapshot = publish_local(publicize(merged), public_root, version, {
         "schema_version": schema_provenance()["version"],
@@ -158,10 +158,10 @@ def promote_local(candidate_directory: Path, master_path: Path, public_root: Pat
         "candidate_manifest_sha256": manifest_checksum,
         "registry": manifest["registry"],
     }, update_pointer=False)
-    master_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = master_path.with_name(f".{master_path.name}.tmp")
+    canonical_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = canonical_path.with_name(f".{canonical_path.name}.tmp")
     temporary.write_text(json.dumps(as_feature_collection(merged), indent=2, sort_keys=True), encoding="utf-8")
-    temporary.replace(master_path)
+    temporary.replace(canonical_path)
     audit_path.parent.mkdir(exist_ok=True)
     audit_path.write_text(json.dumps({
         "snapshot_version": version,

@@ -8,8 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .transformation import as_feature_collection
-from .validation import candidate_profile_errors, multivalued_slots, schema_provenance
+from .transformation import public_feature_collection
+from .validation import (
+    EXPECTED_WGS84_BOUNDS,
+    PUBLIC_GEOJSON_CRS,
+    candidate_profile_errors,
+    multivalued_slots,
+    positions_outside,
+    schema_provenance,
+)
 
 _UNSET = object()
 
@@ -95,8 +102,8 @@ def _validate_snapshot(records: list[dict[str, Any]], directory: Path) -> None:
     # It is read with json rather than gpd.read_file because OGR drops array
     # columns (the multivalued slots) on read.
     payload = json.loads((directory / "projects.geojson").read_text(encoding="utf-8"))
-    if payload.get("crs", {}).get("properties", {}).get("name") != "EPSG:3310":
-        raise ValueError("projects.geojson is not EPSG:3310")
+    if payload.get("crs", {}).get("properties", {}).get("name") != PUBLIC_GEOJSON_CRS:
+        raise ValueError("projects.geojson is not WGS84 lon/lat (CRS84)")
     geojson_records = [{**feature["properties"], "geometry": feature["geometry"]} for feature in payload["features"]]
     if [record["project_id"] for record in geojson_records] != expected_ids:
         raise ValueError("projects.geojson project ordering differs from the snapshot")
@@ -104,6 +111,14 @@ def _validate_snapshot(records: list[dict[str, Any]], directory: Path) -> None:
         geometry = shape(record["geometry"])
         if geometry.is_empty or not geometry.is_valid:
             raise ValueError("projects.geojson contains invalid geometry")
+        outside = positions_outside(record["geometry"], EXPECTED_WGS84_BOUNDS)
+        if outside:
+            lon, lat = outside[0]
+            raise ValueError(
+                f"projects.geojson geometry for {record['project_id']} is outside the expected "
+                f"lon/lat extent {EXPECTED_WGS84_BOUNDS} (first outlier {lon:.5f}, {lat:.5f}); "
+                "the snapshot is not in WGS84 lon/lat"
+            )
     errors = candidate_profile_errors(geojson_records, "RestorationProjectPublicRecord")
     if errors:
         raise ValueError(f"projects.geojson violates the public LinkML profile: {errors[0][1]}")
@@ -195,12 +210,12 @@ def publish_local(
     extra = dict(metadata or {})
     try:
         staging.mkdir()
-        (staging / "projects.geojson").write_text(json.dumps(as_feature_collection(ordered), sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        (staging / "projects.geojson").write_text(json.dumps(public_feature_collection(ordered), sort_keys=True, separators=(",", ":")), encoding="utf-8")
         _write_geopackage(ordered, staging / "projects.gpkg")
         _write_csv(ordered, staging / "projects.csv")
         _validate_snapshot(ordered, staging)
         checksums = {name: _sha256(staging / name) for name in ("projects.geojson", "projects.gpkg", "projects.csv")}
-        snapshot_metadata = {**extra, "snapshot_version": version, "schema_version": extra.get("schema_version", schema_provenance()["version"]), "pipeline_version": __version__, "output_checksums": checksums}
+        snapshot_metadata = {**extra, "snapshot_version": version, "schema_version": extra.get("schema_version", schema_provenance()["version"]), "pipeline_version": __version__, "artifact_crs": {"projects.geojson": "EPSG:4326", "projects.gpkg": "EPSG:3310"}, "output_checksums": checksums}
         (staging / "metadata.json").write_text(json.dumps(snapshot_metadata, indent=2, sort_keys=True), encoding="utf-8")
         staging.replace(target)
         if update_pointer:

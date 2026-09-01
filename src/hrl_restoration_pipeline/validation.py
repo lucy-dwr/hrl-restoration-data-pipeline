@@ -4,6 +4,7 @@ import json
 import math
 import subprocess
 import tempfile
+from functools import lru_cache
 from datetime import datetime, timezone
 from copy import deepcopy
 from pathlib import Path
@@ -24,6 +25,18 @@ _PACKAGED_SNAPSHOT_PATH = Path(__file__).parent / "_schema_snapshot" / _SNAPSHOT
 SCHEMA_PATH = _SOURCE_SNAPSHOT_PATH if _SOURCE_SNAPSHOT_PATH.is_file() else _PACKAGED_SNAPSHOT_PATH
 MANIFEST_PATH = SCHEMA_PATH.with_name("manifest.json")
 ALLOWED = {"Polygon", "MultiPolygon", "Point", "MultiPoint"}
+
+# Equal-area working CRS for validation, canonical storage, and candidate GeoJSON.
+WORKING_EPSG = 3310
+# RFC 7946 GeoJSON is WGS84 lon/lat; the public snapshot is reprojected to it.
+# The explicit CRS84 member matches the map's checked-in fixtures.
+PUBLIC_EPSG = 4326
+PUBLIC_GEOJSON_CRS = "urn:ogc:def:crs:OGC:1.3:CRS84"
+# The extent HRL restoration work can plausibly fall in: California with a wide
+# margin, as (min_lon, min_lat, max_lon, max_lat). A lon/lat coordinate outside
+# this box means the source file's CRS was wrong or missing (the 2026-08
+# projected-meters publication bug), not a real location on the ground.
+EXPECTED_WGS84_BOUNDS = (-125.0, 32.0, -114.0, 42.2)
 SHAPEFILE_FIELD_ALIASES = {
     "project_na": "project_name", "project_de": "project_description", "project_st": "project_stage",
     "lead_entit": "lead_entity", "early_impl": "early_implementation", "project_ty": "project_type",
@@ -35,6 +48,43 @@ SHAPEFILE_FIELD_ALIASES = {
 def schema_provenance() -> dict[str, str]:
     manifest = json.loads(MANIFEST_PATH.read_text())
     return {"name": "hrl-restoration-schema", "version": manifest["tag"], "checksum": manifest["artifacts"][SCHEMA_PATH.name]}
+
+
+@lru_cache(maxsize=None)
+def _transformer(src_epsg: int, dst_epsg: int):
+    from pyproj import Transformer
+    return Transformer.from_crs(src_epsg, dst_epsg, always_xy=True)
+
+
+def reproject_geometry(geometry: dict[str, Any], src_epsg: int, dst_epsg: int) -> dict[str, Any]:
+    """Reproject a GeoJSON geometry mapping between EPSG codes."""
+    if src_epsg == dst_epsg:
+        return geometry
+    from shapely.geometry import mapping, shape
+    from shapely.ops import transform
+    return mapping(transform(_transformer(src_epsg, dst_epsg).transform, shape(geometry)))
+
+
+def iter_positions(geometry: dict[str, Any]):
+    """Yield every coordinate position in a GeoJSON geometry."""
+    def walk(node):
+        if isinstance(node, (list, tuple)):
+            if node and isinstance(node[0], (int, float)) and not isinstance(node[0], bool):
+                yield tuple(node)
+            else:
+                for item in node:
+                    yield from walk(item)
+    yield from walk(geometry.get("coordinates"))
+
+
+def positions_outside(geometry: dict[str, Any], bounds: tuple[float, float, float, float]) -> list[tuple[float, float]]:
+    """Positions in ``geometry`` that fall outside ``bounds`` (min_lon, min_lat, max_lon, max_lat)."""
+    min_lon, min_lat, max_lon, max_lat = bounds
+    return [
+        position
+        for position in iter_positions(geometry)
+        if not (min_lon <= position[0] <= max_lon and min_lat <= position[1] <= max_lat)
+    ]
 
 
 def _normalize(record: dict[str, Any], report: Report) -> dict[str, Any]:
@@ -149,6 +199,11 @@ def validate_records(records: list[dict[str, Any]], registry: ProjectIdRegistry,
     timestamp = validation_timestamp or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     report = Report(manifest.get("submission_id"), registry.provenance(), schema_provenance(), __version__, timestamp)
     normalized = [_normalize(r, report) for r in records]
+    for record in normalized:
+        record_id = str(record.get("project_id") or "")
+        project_name = str(record.get("project_name") or "").strip()
+        if record_id and project_name:
+            report.record_names.setdefault(record_id, project_name)
     # LinkML-derived requiredness: SchemaView reads required flags from the pinned source.
     view = SchemaView(str(SCHEMA_PATH))
     slots = view.class_induced_slots("RestorationProjectSubmission")
@@ -208,13 +263,26 @@ def _validate_spatial(features: list[dict[str, Any]], report: Report) -> None:
     from shapely.geometry import shape
     for item in features:
         rid = str(item.get("project_id") or "<missing>")
-        if not item.get("crs"): report.add("spatial", "ERROR", "crs_required", "input CRS is required", rid)
+        has_crs = bool(item.get("crs"))
+        if not has_crs: report.add("spatial", "ERROR", "crs_required", "input CRS is required", rid)
         geometry = item.get("geometry") or {}; kind = geometry.get("type")
         if kind not in ALLOWED: report.add("spatial", "ERROR", "geometry_type", f"geometry type {kind!r} is not permitted", rid)
         if not geometry.get("coordinates"): report.add("spatial", "ERROR", "nonempty_geometry", "geometry is empty", rid)
         elif kind in ALLOWED:
             try:
-                if not shape(geometry).is_valid: report.add("spatial", "ERROR", "valid_geometry", "geometry is invalid", rid)
+                if not shape(geometry).is_valid:
+                    report.add("spatial", "ERROR", "valid_geometry", "geometry is invalid", rid)
+                elif has_crs:
+                    lonlat = reproject_geometry(geometry, WORKING_EPSG, PUBLIC_EPSG)
+                    outside = positions_outside(lonlat, EXPECTED_WGS84_BOUNDS)
+                    if outside:
+                        report.add(
+                            "spatial", "ERROR", "geometry_in_range",
+                            f"geometry falls outside the expected extent {EXPECTED_WGS84_BOUNDS} "
+                            f"(first outlier lon/lat {outside[0][0]:.5f}, {outside[0][1]:.5f}); "
+                            "check the source file's coordinate reference system",
+                            rid,
+                        )
             except (TypeError, ValueError): report.add("spatial", "ERROR", "valid_geometry", "geometry cannot be parsed", rid)
         if item.get("reprojected"):
             report.repairs.append(Repair(rid, "geometry.crs", item["source_crs"], "EPSG:3310", "reproject_to_epsg_3310", __version__))
