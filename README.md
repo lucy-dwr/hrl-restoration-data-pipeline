@@ -6,7 +6,7 @@ submissions. No Azure orchestration, no queue workers, no database.
 > **If you are the data operator:** do not set this up from this README. Start
 > at
 > [`hrl-azure-infrastructure/RESTORATION_DATA_WORKFLOW.md`](https://github.com/Healthy-Rivers-and-Landscapes-Science/hrl-azure-infrastructure/blob/main/RESTORATION_DATA_WORKFLOW.md)
-> &mdash; it has the full one-time setup for Windows and macOS, and the routine
+> - it has the full one-time setup for Windows and macOS, and the routine
 > to run each time.
 
 > **If you maintain this tool:** read [`CONTRIBUTING.md`](CONTRIBUTING.md).
@@ -41,7 +41,7 @@ docker build --target base --tag hrl-pipeline .
 docker run --rm -v "$PWD:/work" -w /work hrl-pipeline <submission> --registry ...
 ```
 
-The image is a convenience only &mdash; it has no production runtime role, no
+The image is a convenience only - it has no production runtime role, no
 Azure SDKs, and no credentials.
 
 ## Validate a submission

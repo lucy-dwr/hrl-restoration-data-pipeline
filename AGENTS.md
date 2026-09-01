@@ -21,7 +21,7 @@ no queue workers, no database.
    pinned schema snapshot.
 3. The pinned schema snapshot (`schema-snapshots/hrl-restoration-schema/vX.Y.Z/`)
    is immutable. Changing it is the explicit, reviewed procedure in
-   `CONTRIBUTING.md` &mdash; `import_schema_snapshot.py`, then
+   `CONTRIBUTING.md` - `import_schema_snapshot.py`, then
    `_SNAPSHOT_RELATIVE_PATH` in `validation.py` and the `force-include` in
    `pyproject.toml`, then fixtures and `pytest`.
 4. Internal geometry is EPSG:3310. The published `projects.geojson` is WGS84 /

@@ -11,11 +11,11 @@ worth marking; entries here are dated. Backfilled from the git history up to
 
 _Nothing yet._
 
-## 2026-08-31 &mdash; public snapshot CRS fix (`0.3.0`)
+## 2026-08-31 - public snapshot CRS fix (`0.3.0`)
 
 ### Fixed
 
-- The published `projects.geojson` was written in EPSG:3310 projected metres
+- The published `projects.geojson` was written in EPSG:3310 projected meters
   instead of WGS84 longitude/latitude, so every feature landed far outside the
   map's view. `hrl-pipeline promote` now reprojects the published
   `projects.geojson` to WGS84 / CRS84 per RFC 7946; `projects.gpkg` stays in
@@ -31,7 +31,7 @@ _Nothing yet._
   written.
 - `artifact_crs` is recorded in the snapshot `metadata.json`.
 
-## 2026-08-28 &mdash; promotion hardening on real data
+## 2026-08-28 - promotion hardening on real data
 
 ### Fixed
 
@@ -39,7 +39,7 @@ _Nothing yet._
   fields and an oversized geometry. The public snapshot writer and the
   multivalue handling were cleaned up and corrected.
 
-## 2026-08-27 &mdash; simplification to an operator-run tool
+## 2026-08-27 - simplification to an operator-run tool
 
 ### Removed
 
@@ -53,7 +53,7 @@ _Nothing yet._
 - The pipeline is pinned to `hrl-restoration-schema` **v1.3.1** by immutable
   commit and checksum under `schema-snapshots/`.
 
-## 2026-08-24 &mdash; initial pipeline
+## 2026-08-24 - initial pipeline
 
 ### Added
 
